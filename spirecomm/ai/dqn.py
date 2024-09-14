@@ -1,26 +1,32 @@
 from spirecomm.communication.action import *
+from spirecomm.spire.game import Game
 import random
 class DQN:
     def __init__(self):
+        self.game = Game()
+    def generate_action_space(self, game_state):
 
-        pass
-    def generate_command_space(self, game_state):
-        all_choices = []
+        self.game = game_state
         commands = game_state.available_commands
         # 将commands数组中的'key','click','state','wait'删掉
         commands = [command for command in commands if command not in ['key', 'click', 'state', 'wait']]
+
+        all_choices = []
         for command in commands:
-            if command in ['end', 'proceed', 'return']:
+            command = command.lower()
+            if command not in ['play', 'potion', 'choose']:
+                # 补丁：当在休息站时，选择了升级，但是在选择卡牌时，没有选择卡牌，直接选择了取消，导致收不到新的available_commands，导致无法继续游戏
+                if game_state.room_type == 'RestRoom':
+                    if command == 'cancel' and game_state.screen.confirm_up:
+                        continue
                 all_choices.append(Action(command))
             elif command == 'play':
                 for i in range(len(game_state.hand)):
                     if game_state.hand[i].is_playable:
                         if game_state.hand[i].has_target:
-                            for j in range(len(game_state.monsters)):
-                                all_choices.append(Action(command + ' ' + str(i+1) + ' ' + str(j)))
-                                with open('log.txt', 'a') as f:
-                                    f.write('-------play-------\n')
-                                    f.write(command + ' ' + str(i+1) + ' ' + str(j) + '\n')
+                            available_monsters = [monster for monster in game_state.monsters if monster.current_hp > 0 and not monster.half_dead and not monster.is_gone]
+                            for monster in available_monsters:
+                                all_choices.append(PlayCardAction(card=game_state.hand[i], target_monster=monster))
                         else:
                             all_choices.append(Action(command + ' ' + str(i+1)))
             elif command == 'potion':
@@ -42,7 +48,7 @@ class DQN:
     def handle_error(self, error):
         raise Exception(error)
     def get_next_action_in_game(self, game_state):
-        all_choices = self.generate_command_space(game_state)
+        all_choices = self.generate_action_space(game_state)
         return random.choice(all_choices)
     def change_class(self, new_class):
         self.chosen_class = new_class

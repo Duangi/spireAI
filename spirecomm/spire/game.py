@@ -66,7 +66,7 @@ class Game:
         self.play_available = False
         self.proceed_available = False
         self.cancel_available = False
-        
+        self.available_commands = []
 
     @classmethod
     def from_json(cls, json_state, available_commands):
