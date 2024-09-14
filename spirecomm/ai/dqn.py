@@ -1,7 +1,6 @@
 from spirecomm.communication.action import *
 from spirecomm.spire.game import Game
 import random
-import torch 
 class DQN:
     def __init__(self):
         self.game = Game()
