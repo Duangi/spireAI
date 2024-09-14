@@ -1,6 +1,7 @@
 from spirecomm.communication.action import *
 from spirecomm.spire.game import Game
 import random
+import torch 
 class DQN:
     def __init__(self):
         self.game = Game()
@@ -10,15 +11,15 @@ class DQN:
         commands = game_state.available_commands
         # 将commands数组中的'key','click','state','wait'删掉
         commands = [command for command in commands if command not in ['key', 'click', 'state', 'wait']]
-
+        # 补丁：当在休息站时，选择了升级，但是在选择卡牌时，没有选择卡牌，直接选择了取消，导致收不到新的available_commands，导致无法继续游戏
+        # 补丁2：在给精灵献卡时也会出现类似的问题。
+        # 如果同时存在cancel和confirm，那么删掉cancel
+        if 'cancel' in commands and 'confirm' in commands:
+            commands.remove('cancel')
         all_choices = []
         for command in commands:
             command = command.lower()
             if command not in ['play', 'potion', 'choose']:
-                # 补丁：当在休息站时，选择了升级，但是在选择卡牌时，没有选择卡牌，直接选择了取消，导致收不到新的available_commands，导致无法继续游戏
-                if game_state.room_type == 'RestRoom':
-                    if command == 'cancel' and game_state.screen.confirm_up:
-                        continue
                 all_choices.append(Action(command))
             elif command == 'play':
                 for i in range(len(game_state.hand)):
@@ -47,9 +48,11 @@ class DQN:
         return all_choices
     def handle_error(self, error):
         raise Exception(error)
+    
     def get_next_action_in_game(self, game_state):
         all_choices = self.generate_action_space(game_state)
         return random.choice(all_choices)
+    
     def change_class(self, new_class):
         self.chosen_class = new_class
     def get_next_action_out_of_game(self):
