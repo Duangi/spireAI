@@ -1,3 +1,5 @@
+#!/opt/miniconda3/envs/spire/bin/python3
+# 使用指定的python解释器运行此脚本
 import itertools
 
 from spirecomm.communication.coordinator import Coordinator

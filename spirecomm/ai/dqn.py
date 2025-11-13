@@ -4,12 +4,15 @@ from spirecomm.spire.card import Card
 import random
 import os
 import json
-import pandas as pd
-import tensorflow as tf
-from spirecomm.spire.card import CardManager
 
 import numpy as np
-from tensorflow import keras
+import pandas as pd
+from spirecomm.spire.card import CardManager
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+
 from collections import deque
 
 class GameStateProcessor:
@@ -19,10 +22,15 @@ class GameStateProcessor:
         def get_hand_vector(self, game: Game):
             """处理手牌向量（原DQNAgent的get_hand_vector）"""
             max_hand_size = 10
-            hand_vector = [self.card_manager.get_card_embedding_vector(card) for card in game.hand[:max_hand_size]]
-            # 填充零向量（使用numpy数组兼容模型输入）
-            zero_vectors = [[0.0] * 25 for _ in range(max_hand_size - len(game.hand))]
-            return np.array(hand_vector + zero_vectors)  # 输出形状：(10, 25)
+            hand_tensors = [self.card_manager.get_card_embedding_vector(card) for card in game.hand[:max_hand_size]]
+            if not hand_tensors:
+                return torch.zeros(max_hand_size, 25)
+            hand_vector = torch.stack(hand_tensors)
+            padding_size = max_hand_size - hand_vector.shape[0]
+            if padding_size > 0:
+                padding = torch.zeros(padding_size, hand_vector.shape[1])
+                hand_vector = torch.cat([hand_vector, padding], dim=0)
+            return hand_vector
     
         def get_fixed_vector(self, game: Game):
             """处理定长数值向量（如hp、floor等）"""
@@ -153,7 +161,11 @@ class DQNAgent:
         # 通过state_processor获取预处理后的状态
         fixed_vector = self.state_processor.get_fixed_vector(game_state)
         hand_vector = self.state_processor.get_hand_vector(game_state)
-        state = [np.array([fixed_vector]), np.array([hand_vector])]
+        
+        fixed_tensor = torch.from_numpy(fixed_vector).float().unsqueeze(0)
+        hand_tensor = hand_vector.unsqueeze(0)
+        
+        state = [fixed_tensor, hand_tensor]
         action_idx = self.dqn.act(state)
         return all_choices[action_idx] if action_idx < len(all_choices) else random.choice(all_choices)
 
@@ -173,58 +185,68 @@ class DQNAgent:
     def get_next_action_out_of_game(self):
         return StartGameAction(self.chosen_class)
     
+class DQNModel(nn.Module):
+    def __init__(self, action_size):
+        super(DQNModel, self).__init__()
+        self.dense1 = nn.Linear(11, 64)
+        self.dense2 = nn.Linear(25, 64)
+        self.output_dense = nn.Linear(64 + 10 * 64, action_size)
+
+    def forward(self, state):
+        input1, input2 = state
+        x1 = F.relu(self.dense1(input1))
+        x2 = F.relu(self.dense2(input2))
+        x2_flat = x2.view(x2.size(0), -1)
+        combined = torch.cat([x1, x2_flat], dim=1)
+        output = self.output_dense(combined)
+        return output
+
 class DQN:
     def __init__(self, action_size, state_processor: GameStateProcessor):
         self.memory = deque(maxlen=2000)
         self.gamma = 0.95
         self.epsilon = 1.0
         self.epsilon_min = 0.01
-        self.epsilon_max = 0.995
         self.epsilon_decay = 0.995
         self.action_size = action_size
-        self.state_processor = state_processor  # 接收数据处理器
-        self.model = self._build_model()
-
-    def remember(self, game_state, action, reward, next_game_state, done):
-        # 使用state_processor预处理状态
-        state = self.state_processor.get_state_vector(game_state)
-        next_state = self.state_processor.get_state_vector(next_game_state)
-        self.memory.append((state, action, reward, next_state, done))
-
-    def _build_model(self):
-        input1 = keras.layers.Input(shape=(7,))
-        input2 = keras.layers.Input(shape=(10,25))
-
-        x1 = keras.layers.Dense(64, activation='relu')(input1)
-        x1 = keras.layers.Flatten()(x1)
-
-        x2 = keras.layers.Dense(64, activation='relu')(input2)
-        x2 = keras.layers.Flatten()(x2)
-
-        combined = keras.layers.concatenate([x1, x2])
-
-        # 修正：使用传入的action_size作为输出维度（替代all_commands_dict）
-        output = keras.layers.Dense(self.action_size, activation='softmax')(combined)
-
-        model = keras.models.Model(inputs=[input1, input2], outputs=output)
-        model.compile(loss='categorical_crossentropy', optimizer='adam')
-        return model
+        self.state_processor = state_processor
+        self.model = DQNModel(action_size)
+        self.optimizer = optim.Adam(self.model.parameters())
+        self.loss_fn = nn.MSELoss()
 
     def remember(self, state, action, reward, next_state, done):
-        # 修正：使用元组存储（保持顺序）
-        self.memory.append((state, action, reward, next_state, done))
+        state_numpy = [s.detach().cpu().numpy() for s in state]
+        next_state_numpy = [s.detach().cpu().numpy() for s in next_state]
+        self.memory.append((state_numpy, action, reward, next_state_numpy, done))
 
     def train(self, batch_size=32):
+        if len(self.memory) < batch_size:
+            return
         minibatch = random.sample(self.memory, batch_size)
         for state, action, reward, next_state, done in minibatch:
-            target = self.model.predict(state, verbose=0)
+            state_tensors = [torch.from_numpy(s).float() for s in state]
+            
+            self.model.train()
+            q_values = self.model(state_tensors)
+            
+            target_q_values = q_values.clone().detach()
+
             if done:
-                target[0][action] = reward
+                target_q_values[0][action] = float(reward)
             else:
-                # 修正：使用self.gamma替代未定义的discount_factor
-                Q_future = max(self.model.predict(next_state, verbose=0)[0])
-                target[0][action] = reward + Q_future * self.gamma
-            self.model.fit(state, target, epochs=1, verbose=0)
+                next_state_tensors = [torch.from_numpy(s).float() for s in next_state]
+                with torch.no_grad():
+                    self.model.eval()
+                    q_future = torch.max(self.model(next_state_tensors)[0]).item()
+                    self.model.train()
+                target_q_values[0][action] = reward + q_future * self.gamma
+            
+            loss = self.loss_fn(q_values, target_q_values)
+            
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
@@ -232,5 +254,8 @@ class DQN:
         """修正：确保输入状态格式正确"""
         if np.random.rand() <= self.epsilon:
             return random.randrange(self.action_size)
-        act_values = self.model.predict(state, verbose=0)  # 静默预测
-        return np.argmax(act_values[0])
+        with torch.no_grad():
+            self.model.eval()
+            act_values = self.model(state)
+            self.model.train()
+        return torch.argmax(act_values[0]).item()

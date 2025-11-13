@@ -7,7 +7,7 @@ import spirecomm.spire.map
 import spirecomm.spire.potion
 import spirecomm.spire.screen
 
-import tensorflow as tf
+import torch
 
 
 class RoomPhase(Enum):
@@ -140,7 +140,7 @@ class Game:
         ngold = int(self.gold) / 2000
         ncharacter = int(self.character.value) / 4
         nascension_level = int(self.ascension_level) / 20
-        fixed_vector = tf.constant([ncurrent_hp, nmax_hp, nfloor, nact, ngold, ncharacter, nascension_level])
+        fixed_vector = torch.tensor([ncurrent_hp, nmax_hp, nfloor, nact, ngold, ncharacter, nascension_level], dtype=torch.float32)
         return fixed_vector
 
     def are_potions_full(self):

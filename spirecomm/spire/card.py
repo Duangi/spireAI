@@ -1,5 +1,6 @@
 from enum import Enum
-import tensorflow as tf
+import torch
+import torch.nn as nn
 import json
 import os
 
@@ -98,10 +99,11 @@ class CardManager:
     def get_card_embedding_vector(self, card:Card):
         # id是字符串，因此需要使用embedding层转化为向量
         # 游戏中大约有400张卡牌，因此embedding的维度可以设置为20
-        embedding_layer = tf.keras.layers.Embedding(input_dim=500, output_dim = 20)
+        embedding_layer = nn.Embedding(num_embeddings=500, embedding_dim=20)
         
         index = self.get_card_index(card)
-        index_vector = embedding_layer(tf.constant([int(index)]))
+        index_tensor = torch.tensor([int(index)], dtype=torch.long)
+        index_vector = embedding_layer(index_tensor)
         # 将一些卡牌的属性转化为向量
         ntype = self.normalize(int(card.type.value), max=5)
         nrarity = self.normalize(int(card.rarity.value), max=6)
@@ -109,10 +111,10 @@ class CardManager:
         nhas_target = self.normalize(int(card.has_target), max=1)
         ncost = self.normalize(int(card.cost), max=3)
         # 将index_vector和fixed_vector合并
-        fixed_vector = tf.constant([ntype, nrarity, nupgrades, nhas_target, ncost])
-        index_vector = tf.reshape(index_vector, [20])
+        fixed_vector = torch.tensor([ntype, nrarity, nupgrades, nhas_target, ncost], dtype=torch.float32)
+        index_vector = index_vector.view(-1)
         # fixed_vector = tf.expand_dims(fixed_vector, axis=0)
-        embedded_vector = tf.concat([index_vector, fixed_vector], axis=0)
+        embedded_vector = torch.cat([index_vector, fixed_vector], dim=0)
         
         return embedded_vector
     
