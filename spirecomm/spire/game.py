@@ -7,6 +7,8 @@ import spirecomm.spire.map
 import spirecomm.spire.potion
 import spirecomm.spire.screen
 
+import tensorflow as tf
+
 
 class RoomPhase(Enum):
     COMBAT = 1,
@@ -34,6 +36,7 @@ class Game:
         self.deck = []
         self.potions = []
         self.map = []
+        self.act_boss = None
 
         # Combat state
 
@@ -128,6 +131,17 @@ class Game:
         game.available_commands = available_commands
 
         return game
+    
+    def get_fixed_vector(self):
+        ncurrent_hp = int(self.current_hp) / 200
+        nmax_hp = int(self.max_hp) / 200
+        nfloor = int(self.floor) / 55
+        nact = int(self.act) / 4
+        ngold = int(self.gold) / 2000
+        ncharacter = int(self.character.value) / 4
+        nascension_level = int(self.ascension_level) / 20
+        fixed_vector = tf.constant([ncurrent_hp, nmax_hp, nfloor, nact, ngold, ncharacter, nascension_level])
+        return fixed_vector
 
     def are_potions_full(self):
         for potion in self.potions:

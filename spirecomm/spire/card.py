@@ -1,5 +1,7 @@
 from enum import Enum
-
+import tensorflow as tf
+import json
+import os
 
 class CardType(Enum):
     ATTACK = 1
@@ -52,3 +54,68 @@ class Card:
 
     def __eq__(self, other):
         return self.uuid == other.uuid
+    
+    
+
+class CardManager:
+    def __init__(self, filename="cards.json"):
+        self.filename = os.path.join(os.path.dirname(__file__),filename)
+        self.cards = {}
+        
+        # 从文件中读取max_index
+        if os.path.exists(self.filename):
+            with open(self.filename, 'r') as f:
+                self.cards = json.load(f)
+        else:
+            # 打开文件并往里面存储self.cards
+            with open(self.filename, 'w') as f:
+                json.dump(self.cards, f)
+    def get_abspath(self):
+        path = os.path.abspath(__file__)
+        # 获取当前脚本所在的目录
+        dir = os.path.dirname(path)
+        return dir
+
+    def get_card_index(self, card:Card):
+        if card.card_id in self.cards:
+            return self.cards[card.card_id]
+        else:
+            return self.add_card(card)
+
+    # 做一个只能往里加卡牌的功能
+    def add_card(self, card:Card):
+        # 判断self.cards里面是否有和card.uuid相同的key
+        if card.card_id in self.cards:
+            return self.cards[card.card_id]
+        else:
+            # 如果没有，那么就把card.uuid加进去
+            self.cards[card.card_id] = len(self.cards)
+            # 再把self.cards写入文件
+            with open( self.filename, 'w') as f:
+                json.dump(self.cards, f)
+            return self.cards[card.card_id]
+        
+    def get_card_embedding_vector(self, card:Card):
+        # id是字符串，因此需要使用embedding层转化为向量
+        # 游戏中大约有400张卡牌，因此embedding的维度可以设置为20
+        embedding_layer = tf.keras.layers.Embedding(input_dim=500, output_dim = 20)
+        
+        index = self.get_card_index(card)
+        index_vector = embedding_layer(tf.constant([int(index)]))
+        # 将一些卡牌的属性转化为向量
+        ntype = self.normalize(int(card.type.value), max=5)
+        nrarity = self.normalize(int(card.rarity.value), max=6)
+        nupgrades = self.normalize(int(card.upgrades), max=1)
+        nhas_target = self.normalize(int(card.has_target), max=1)
+        ncost = self.normalize(int(card.cost), max=3)
+        # 将index_vector和fixed_vector合并
+        fixed_vector = tf.constant([ntype, nrarity, nupgrades, nhas_target, ncost])
+        index_vector = tf.reshape(index_vector, [20])
+        # fixed_vector = tf.expand_dims(fixed_vector, axis=0)
+        embedded_vector = tf.concat([index_vector, fixed_vector], axis=0)
+        
+        return embedded_vector
+    
+    # 将数据映射到0-1之间
+    def normalize(self, x, max):
+        return x / (max)

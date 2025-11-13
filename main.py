@@ -1,15 +1,14 @@
 import itertools
-import datetime
-import sys
 
 from spirecomm.communication.coordinator import Coordinator
-from spirecomm.ai.agent import SimpleAgent
 from spirecomm.spire.character import PlayerClass
-from spirecomm.ai.dqn import DQN
+from spirecomm.ai.dqn import DQN,DQNAgent
+
 
 if __name__ == "__main__":
     # agent = SimpleAgent()
-    dqn = DQN()
+    dqn = DQNAgent()
+    card_manager = dqn.card_manager
     coordinator = Coordinator()
     coordinator.signal_ready()
     coordinator.register_command_error_callback(dqn.handle_error)
