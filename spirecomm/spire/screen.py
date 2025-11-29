@@ -1,10 +1,13 @@
 from enum import Enum
+import torch
+import torch.nn as nn
 
 from spirecomm.spire.potion import Potion
 from spirecomm.spire.card import Card
 from spirecomm.spire.relic import Relic
 from spirecomm.spire.map import Node
-
+from spirecomm.utils.data_processing import get_hash_val_normalized, normal_normalize, _pad_vector_list
+from spirecomm.ai.constants import MAX_DECK_SIZE, MAX_HAND_SIZE
 
 class ScreenType(Enum):
     EVENT = 1
@@ -78,6 +81,31 @@ class Screen:
     def from_json(cls, json_object):
         return cls()
 
+    @classmethod
+    def get_vec_length(cls):
+        """计算所有屏幕状态向量中的最大可能长度"""
+        shop_len = 7 * Card.get_vec_length() + 3 * Relic.get_vec_length() + 3 * Potion.get_vec_length() + 2
+        card_reward_len = 3 * Card.get_vec_length() + 1
+        grid_len = MAX_DECK_SIZE * Card.get_vec_length() + 4
+        hand_select_len = MAX_HAND_SIZE * Card.get_vec_length() + 2
+        rest_len = len(RestOption)
+        event_len = 1 + 5 # event_id_hash + 5 options hash
+        combat_reward_len = 5 * max(Card.get_vec_length(), Relic.get_vec_length(), Potion.get_vec_length(), 1) # 5 rewards, take max size
+        boss_reward_len = 3 * Relic.get_vec_length()
+
+        return max(shop_len, card_reward_len, grid_len, hand_select_len, rest_len, event_len, combat_reward_len, boss_reward_len)
+
+    def get_vector(self):
+        """
+        为当前屏幕状态创建向量。
+        基类返回一个零向量。子类应覆盖此方法。
+        """
+        return torch.zeros(self.get_vec_length())
+
+    def _create_padded_vector(self, content_vector: torch.Tensor):
+        padded_vec = torch.zeros(self.get_vec_length())
+        padded_vec[:content_vector.numel()] = content_vector
+        return padded_vec
 
 class ChestScreen(Screen):
 
@@ -122,6 +150,14 @@ class EventScreen(Screen):
         for json_option in json_object["options"]:
             event.options.append(EventOption.from_json(json_option))
         return event
+    
+    def get_vector(self):
+        event_id_hash = get_hash_val_normalized(self.event_id)
+        option_hashes = torch.zeros(5)
+        for i, option in enumerate(self.options[:5]):
+            option_hashes[i] = get_hash_val_normalized(option.text)
+        content_vec = torch.cat([event_id_hash, option_hashes])
+        return self._create_padded_vector(content_vec)
 
 
 class ShopRoomScreen(Screen):
@@ -142,6 +178,12 @@ class RestScreen(Screen):
     def from_json(cls, json_object):
         rest_options = [RestOption[option.upper()] for option in json_object.get("rest_options")]
         return cls(json_object.get("has_rested"), rest_options)
+    
+    def get_vector(self):
+        options_one_hot = torch.zeros(len(RestOption))
+        for option in self.rest_options:
+            options_one_hot[option.value - 1] = 1.0
+        return self._create_padded_vector(options_one_hot)
 
 
 class CardRewardScreen(Screen):
@@ -160,6 +202,12 @@ class CardRewardScreen(Screen):
         can_bowl = json_object.get("bowl_available")
         can_skip = json_object.get("skip_available")
         return cls(cards, can_bowl, can_skip)
+    
+    def get_vector(self):
+        card_vectors = [card.get_vector() for card in self.cards[:3]]
+        padded_cards = _pad_vector_list(card_vectors, 3, Card.get_vec_length())
+        skip_vec = torch.tensor([1.0 if self.can_skip else 0.0], dtype=torch.float32)
+        return self._create_padded_vector(torch.cat([padded_cards, skip_vec]))
 
 
 class CombatReward:
@@ -200,6 +248,24 @@ class CombatRewardScreen(Screen):
             else:
                 rewards.append(CombatReward(reward_type))
         return cls(rewards)
+    
+    def get_vector(self):
+        reward_vectors = []
+        # We need a unified size for different reward types
+        # Let's use the max size of card, relic, or potion vector
+        max_size = max(Card.get_vec_length(), Relic.get_vec_length(), Potion.get_vec_length(), 1)
+        for reward in self.rewards[:5]:
+            vec = torch.zeros(max_size)
+            if reward.reward_type == RewardType.GOLD:
+                vec[0] = normal_normalize(reward.gold, 10, 100)
+            elif reward.reward_type == RewardType.RELIC and reward.relic:
+                r_vec = reward.relic.get_vector(); vec[:r_vec.numel()] = r_vec
+            elif reward.reward_type == RewardType.POTION and reward.potion:
+                p_vec = reward.potion.get_vector(); vec[:p_vec.numel()] = p_vec
+            elif reward.reward_type == RewardType.CARD:
+                vec[0] = -1.0 # Special value to indicate a card reward choice
+            reward_vectors.append(vec)
+        return self._create_padded_vector(_pad_vector_list(reward_vectors, 5, max_size))
 
 
 class MapScreen(Screen):
@@ -240,6 +306,11 @@ class BossRewardScreen(Screen):
     def from_json(cls, json_object):
         relics = [Relic.from_json(relic) for relic in json_object.get("relics")]
         return cls(relics)
+    
+    def get_vector(self):
+        relic_vectors = [relic.get_vector() for relic in self.relics[:3]]
+        padded_relics = _pad_vector_list(relic_vectors, 3, Relic.get_vec_length())
+        return self._create_padded_vector(padded_relics)
 
 
 class ShopScreen(Screen):
@@ -262,6 +333,21 @@ class ShopScreen(Screen):
         purge_available = json_object.get("purge_available")
         purge_cost = json_object.get("purge_cost")
         return cls(cards, relics, potions, purge_available, purge_cost)
+    
+    def get_vector(self):
+        card_vectors = [card.get_vector() for card in self.cards[:7]]
+        padded_cards = _pad_vector_list(card_vectors, 7, Card.get_vec_length())
+
+        relic_vectors = [relic.get_vector() for relic in self.relics[:3]]
+        padded_relics = _pad_vector_list(relic_vectors, 3, Relic.get_vec_length())
+
+        potion_vectors = [potion.get_vector() for potion in self.potions[:3]]
+        padded_potions = _pad_vector_list(potion_vectors, 3, Potion.get_vec_length())
+
+        purge_vec = torch.tensor([1.0 if self.purge_available else 0.0, normal_normalize(self.purge_cost, 50, 150)], dtype=torch.float32)
+
+        content_vec = torch.cat([padded_cards, padded_relics, padded_potions, purge_vec])
+        return self._create_padded_vector(content_vec)
 
 
 class GridSelectScreen(Screen):
@@ -290,6 +376,16 @@ class GridSelectScreen(Screen):
         for_transform = json_object.get("for_transform")
         for_purge = json_object.get("for_purge")
         return cls(cards, selected_cards, num_cards, any_number, confirm_up, for_upgrade, for_transform, for_purge)
+    
+    def get_vector(self):
+        purpose_vec = torch.tensor([
+            1.0 if self.for_upgrade else 0.0,
+            1.0 if self.for_transform else 0.0,
+            1.0 if self.for_purge else 0.0,
+            normal_normalize(self.num_cards, 1, 10)
+        ], dtype=torch.float32)
+        card_vectors = [card.get_vector() for card in self.cards[:MAX_DECK_SIZE]]
+        return self._create_padded_vector(torch.cat([purpose_vec, _pad_vector_list(card_vectors, MAX_DECK_SIZE, Card.get_vec_length())]))
 
 
 class HandSelectScreen(Screen):
@@ -310,6 +406,14 @@ class HandSelectScreen(Screen):
         num_cards = json_object.get("max_cards")
         can_pick_zero = json_object.get("can_pick_zero")
         return cls(cards, selected_cards, num_cards, can_pick_zero)
+    
+    def get_vector(self):
+        info_vec = torch.tensor([
+            normal_normalize(self.num_cards, 1, 10),
+            1.0 if self.can_pick_zero else 0.0
+        ], dtype=torch.float32)
+        card_vectors = [card.get_vector() for card in self.cards[:MAX_HAND_SIZE]]
+        return self._create_padded_vector(torch.cat([info_vec, _pad_vector_list(card_vectors, MAX_HAND_SIZE, Card.get_vec_length())]))
 
 
 class GameOverScreen(Screen):
@@ -324,6 +428,13 @@ class GameOverScreen(Screen):
     @classmethod
     def from_json(cls, json_object):
         return cls(json_object.get("score"), json_object.get("victory"))
+    
+    def get_vector(self):
+        game_over_vec = torch.tensor([
+            1.0 if self.victory else 0.0,
+            normal_normalize(self.score, 0, 2000)
+        ], dtype=torch.float32)
+        return self._create_padded_vector(game_over_vec)
 
 
 class CompleteScreen(Screen):
@@ -351,3 +462,49 @@ SCREEN_CLASSES = {
 
 def screen_from_json(screen_type, json_object):
     return SCREEN_CLASSES[screen_type].from_json(json_object)
+
+if __name__ == "__main__":
+    import json
+    # 避免循环导入，仅在测试时导入
+    from spirecomm.spire.game import Game
+
+    # 辅助函数，用于打印和断言
+    def assert_and_print(name, tensor, expected_len, full_preview=False):
+        actual_len = tensor.numel()
+        assert actual_len == expected_len, f"{name} 长度错误! 预期: {expected_len}, 实际: {actual_len}"
+        print(f"\n[ {name} ] - 长度: {actual_len}")
+        if full_preview:
+            preview = tensor.flatten()
+        else:
+            preview = tensor.flatten()[:10]
+        print(f"  - 内容预览: {preview.tolist()}")
+
+    # --- 测试 CardRewardScreen ---
+    print("\n\n--- 测试 CardRewardScreen 的向量化 ---")
+    card_reward_state_json = """
+    {"available_commands":["choose","skip","key","click","wait","state"],"ready_for_command":true,"in_game":true,"game_state":{"choice_list":["杂技","灾祸","带毒刺击"],"screen_type":"CARD_REWARD","screen_state":{"cards":[{"exhausts":false,"is_playable":false,"cost":1,"name":"杂技","id":"Acrobatics","type":"SKILL","ethereal":false,"uuid":"a1fdfc68-cca6-4e48-97ae-7ce9ee8b2218","upgrades":0,"rarity":"COMMON","has_target":false},{"exhausts":false,"is_playable":false,"cost":1,"name":"灾祸","id":"Bane","type":"ATTACK","ethereal":false,"uuid":"4b90e05c-0d41-4fdf-81a1-9ff9de75f8ef","upgrades":0,"rarity":"COMMON","has_target":true},{"exhausts":false,"is_playable":false,"cost":1,"name":"带毒刺击","id":"Poisoned Stab","type":"ATTACK","ethereal":false,"uuid":"75dcd791-470a-494b-b6dc-e7f63c948a69","upgrades":0,"rarity":"COMMON","has_target":true}],"bowl_available":false,"skip_available":true},"seed":-164215452355420946,"deck":[],"relics":[],"max_hp":70,"act_boss":"The Guardian","gold":99,"action_phase":"WAITING_ON_USER","act":1,"screen_name":"CARD_REWARD","room_phase":"COMPLETE","is_screen_up":true,"potions":[],"current_hp":70,"floor":0,"ascension_level":0,"class":"THE_SILENT","map":[]}}
+    """
+    game_json_reward = json.loads(card_reward_state_json)
+    available_commands_reward = game_json_reward.get("available_commands", [])
+    game_state_data_reward = game_json_reward.get("game_state", {})
+    game_obj_reward = Game.from_json(game_state_data_reward, available_commands_reward)
+
+    # 提取 screen vector
+    screen_vector = game_obj_reward.screen.get_vector()
+    
+    # 手动构建 screen vector 以供对比
+    manual_parts = []
+    
+    card_vectors = [card.get_vector() for card in game_obj_reward.screen.cards[:3]]
+    padded_cards = _pad_vector_list(card_vectors, 3, Card.get_vec_length())
+    manual_parts.append(padded_cards)
+
+    skip_vec = torch.tensor([1.0 if game_obj_reward.screen.can_skip else 0.0], dtype=torch.float32)
+    manual_parts.append(skip_vec)
+
+    content_vec = torch.cat(manual_parts)
+    manual_screen_vector = torch.zeros(Screen.get_vec_length())
+    manual_screen_vector[:content_vec.numel()] = content_vec
+    
+    assert torch.equal(screen_vector, manual_screen_vector), "CardRewardScreen 的向量内容不匹配!"
+    print("✅ CardRewardScreen 的向量化逻辑验证成功！")

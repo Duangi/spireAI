@@ -1,82 +1,49 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
+MAX_HAND_SIZE = 10 # 手牌数量上限
+MAX_DECK_SIZE = 100 # 卡组最大数量, 理论上没有上限，但实际游戏中一般不会超过100张吧？或者超过100张就很少见了，或者干脆超过100张就进行惩罚
+MAX_MONSTER_COUNT = 5 # 最多同时存在的怪物数量：蛇女+四个匕首 或者 五只小史莱姆。有待求证
+MAX_POTION_COUNT = 5 # 最多携带5个药水
 
-class MyModel(nn.Module):
+class ActionMapper:
     def __init__(self):
-        super(MyModel, self).__init__()
-        # 对第一个输入进行特征提取
-        self.dense1 = nn.Linear(7, 64)
-        
-        # 对第二个输入进行特征提取
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=(3,3))
-        
-        # 计算conv1输出的维度
-        # 假设输入是 (N, 1, 10, 25)
-        # 输出是 (N, 32, 8, 23)
-        self.flattened_dim = 32 * 8 * 23
+        """初始化动作映射器"""
+        # 最大动作维度应该等于{"choose": 0, "return": 1, "play": 2, "end": 3, "proceed": 4, "skip": 5, "potion": 6, "leave": 7, "confirm": 8, "cancel": 9}
+        # 以上这些动作加上后续可能的target加起来。
+        # choose: 考虑到升级卡牌，所以最大值应该是卡组大小 MAX_DECK_SIZE
+        # play: 最大值应该是手牌数量 MAX_HAND_SIZE 乘以 最大怪物数量 MAX_MONSTER_COUNT（考虑有目标和无目标两种情况）
+        # potion: 最大值应该是药水数量 乘以 最大怪物数量 MAX_MONSTER_COUNT（考虑有目标和无目标两种情况）
+        # 剩余其他动作都是单一动作
+        self.max_choose_dim = MAX_DECK_SIZE
+        print(f"最大选择动作维度: {self.max_choose_dim}")
+        self.max_play_dim = MAX_HAND_SIZE * MAX_MONSTER_COUNT
+        print(f"最大出牌动作维度: {self.max_play_dim}")
+        self.max_potion_dim = MAX_POTION_COUNT + MAX_POTION_COUNT * MAX_MONSTER_COUNT
+        print(f"最大药水动作维度: {self.max_potion_dim}")
+        self.max_single_dim = 7  # 单一动作的数量
+        print(f"最大单一动作维度: {self.max_single_dim}")
 
-        # 第一个输出头：命令选择（10类命令）
-        self.command_output = nn.Linear(64 + self.flattened_dim, 10)
-        
-        # 第二个输出头：第一个数字（可选，可能为三位数字）
-        self.num1_output = nn.Linear(64 + self.flattened_dim, 3)
-        
-        # 第三个输出头：第二个数字（可选）
-        self.num2_output = nn.Linear(64 + self.flattened_dim, 3)
-        
-        self.relu = nn.ReLU()
-        self.softmax = nn.Softmax(dim=1)
+        self.max_action_dim = self.max_choose_dim + self.max_play_dim + self.max_potion_dim + self.max_single_dim
+        print(f"总动作维度: {self.max_action_dim}")
 
-    def forward(self, input1, input2):
-        # 对第一个输入进行特征提取
-        x1 = self.relu(self.dense1(input1))
-        
-        # 对第二个输入进行特征提取
-        # input2需要增加一个channel维度
-        x2 = input2.unsqueeze(1) # (N, 1, 10, 25)
-        x2 = self.relu(self.conv1(x2))
-        x2 = x2.view(x2.size(0), -1) # Flatten
-        
-        # 合并两个输入的特征
-        combined = torch.cat((x1, x2), dim=1)
-        
-        # 输出头
-        command = self.softmax(self.command_output(combined))
-        num1 = self.relu(self.num1_output(combined))
-        num2 = self.relu(self.num2_output(combined))
-        
-        return command, num1, num2
-
-# 创建模型实例
-model = MyModel()
-
-# 定义损失函数和优化器
-criterion_command = nn.CrossEntropyLoss()
-criterion_num = nn.MSELoss()
-optimizer = optim.Adam(model.parameters())
-
-# 示例输入
-input1_sample = torch.randn(1, 7)
-input2_sample = torch.randn(1, 10, 25)
-
-# 前向传播
-command_pred, num1_pred, num2_pred = model(input1_sample, input2_sample)
-
-# 假设的真实标签
-command_true = torch.tensor([1], dtype=torch.long)
-num1_true = torch.tensor([[1., 2., 3.]])
-num2_true = torch.tensor([[4., 5., 6.]])
-
-# 计算损失
-loss_command = criterion_command(command_pred, command_true)
-loss_num1 = criterion_num(num1_pred, num1_true)
-loss_num2 = criterion_num(num2_pred, num2_true)
-total_loss = loss_command + loss_num1 + loss_num2
-
-# 反向传播和优化
-optimizer.zero_grad()
-total_loss.backward()
-optimizer.step()
-
-print("Model, loss, and optimizer are set up using PyTorch.")
+        """根据动作类型，区分索引范围，方便后续映射"""
+        self.choose_start = 0
+        self.choose_end = self.choose_start + self.max_choose_dim - 1
+        print(f"选择动作索引范围: {self.choose_start} - {self.choose_end}")
+        self.play_start = self.choose_end + 1
+        self.play_end = self.play_start + self.max_play_dim - 1
+        print(f"出牌动作索引范围: {self.play_start} - {self.play_end}")
+        self.potion_start = self.play_end + 1
+        self.potion_end = self.potion_start + self.max_potion_dim - 1
+        print(f"药水动作索引范围: {self.potion_start} - {self.potion_end}")
+        self.single_start = self.potion_end + 1
+        self.single_actions = {
+            "return": self.single_start + 0, 
+            "end": self.single_start + 1,    
+            "proceed": self.single_start + 2,
+            "skip": self.single_start + 3,
+            "leave": self.single_start + 4,
+            "confirm": self.single_start + 5,
+            "cancel": self.single_start + 6,
+        }
+        self.single_end = self.single_start + self.max_single_dim - 1
+        print(f"单一动作索引范围: {self.single_start} - {self.single_end}")
+    # def action_to_index(self, command: str):

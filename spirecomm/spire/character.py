@@ -1,7 +1,12 @@
+from dataclasses import dataclass
 from enum import Enum
+from typing import List
 
+import torch
+import torch.nn as nn
 from spirecomm.spire.power import Power
-
+from spirecomm.utils.data_processing import minmax_normalize, get_hash_val_normalized, normal_normalize
+from spirecomm.ai.constants import MAX_ORB_COUNT, MAX_POWER_COUNT
 
 class Intent(Enum):
     ATTACK = 1
@@ -30,20 +35,57 @@ class PlayerClass(Enum):
     IRONCLAD = 1
     THE_SILENT = 2
     DEFECT = 3
+    THE_WATCHER = 4
 
+
+class OrbType(Enum):
+    LIGHTNING = 1
+    FROST = 2
+    DARK = 3
+    PLASMA = 4
 
 class Orb:
 
     def __init__(self, name, orb_id, evoke_amount, passive_amount):
         self.name = name
         self.orb_id = orb_id
-        self.evoke_amount = evoke_amount
-        self.passive_amount = passive_amount
-
+        self.evoke_amount = evoke_amount # 激发
+        self.passive_amount = passive_amount # 被动
+    @classmethod
+    def get_vec_length(self):
+        return 6
+    def get_vector(self):
+        """将球的属性转换为固定长度的向量表示"""
+        # 1. 对 orb_id 进行 one-hot 编码
+        one_hot_id = nn.functional.one_hot(
+            torch.tensor(self.orb_id.value - 1, dtype=torch.long),
+            num_classes=len(OrbType)
+        ).float()
+        # 2. 对 evoke_amount 和 passive_amount 进行归一化
+        normalized_amounts = torch.tensor([
+            normal_normalize(self.evoke_amount, 0, 50),    # 假设最大值为20
+            normal_normalize(self.passive_amount, 0, 20) # 假设最大值为20
+        ], dtype=torch.float32)
+        return torch.cat([one_hot_id, normalized_amounts])
+    @classmethod
+    def from_str_to_type(self, id_str:str) -> OrbType:
+        # 全部小写
+        id_str = id_str.lower()
+        if id_str == "lightning":
+            return OrbType.LIGHTNING
+        elif id_str == "frost":
+            return OrbType.FROST
+        elif id_str == "dark":
+            return OrbType.DARK
+        elif id_str == "plasma":
+            return OrbType.PLASMA
+        else:
+            raise ValueError(f"游戏中使用的球的id是：{id_str}，和类型定义中的有冲突，请检查代码")
     @classmethod
     def from_json(cls, json_object):
         name = json_object.get("name")
-        orb_id = json_object.get("id")
+        orb_id = cls.from_str_to_type(json_object.get("id"))
+        # orb_id = json_object.get("id")
         evoke_amount = json_object.get("evoke_amount")
         passive_amount = json_object.get("passive_amount")
         orb = Orb(name, orb_id, evoke_amount, passive_amount)
@@ -57,42 +99,111 @@ class Character:
         self.current_hp = current_hp
         if self.current_hp is None:
             self.current_hp = self.max_hp
-        self.block = block
-        self.powers = []
+        self.block = block # 护盾
+        self.powers:List[Power] = [] # 能力
 
 
 class Player(Character):
-
     def __init__(self, max_hp, current_hp=None, block=0, energy=0):
         super().__init__(max_hp, current_hp, block)
-        self.energy = energy
+        self.energy:int = energy
         self.orbs = []
+    @classmethod
+    def get_vec_length(cls):
+        # block, energy, orbs, powers
+        return 1 + 1 + MAX_ORB_COUNT * Orb.get_vec_length() + MAX_POWER_COUNT * Power.get_vec_length()
+    def get_vector(self):
+        """将玩家的属性转换为固定长度的向量表示"""
+        # 1. 归一化 block 和 energy
+        block_tensor = torch.tensor([normal_normalize(self.block, 0, 50)], dtype=torch.float32)
+        energy_tensor = torch.tensor([normal_normalize(self.energy, 0, 5)], dtype=torch.float32)
+
+        # 2. 处理充能球(orbs)，并填充到 MAX_ORB_COUNT
+        orb_vectors = [orb.get_vector() for orb in self.orbs]
+        # 如果有充能球，将它们堆叠成一个2D张量
+        if orb_vectors:
+            orbs_tensor = torch.stack(orb_vectors)
+        else:
+            # 如果没有，创建一个空的2D张量以便后续填充
+            orbs_tensor = torch.empty(0, Orb.get_vec_length())
+        # 计算需要填充的零向量数量，并创建填充张量
+        orb_padding_count = MAX_ORB_COUNT - len(orb_vectors)
+        orb_padding = torch.zeros(orb_padding_count, Orb.get_vec_length())
+        # 拼接并展平为1D向量
+        orbs_tensor = torch.cat([orbs_tensor, orb_padding], dim=0).flatten()
+
+        # 3. 处理能力(powers)，并填充到 MAX_POWER_COUNT (逻辑与orbs类似)
+        power_vectors = [power.get_vector() for power in self.powers]
+        if power_vectors:
+            powers_tensor = torch.stack(power_vectors)
+        else:
+            powers_tensor = torch.empty(0, Power.get_vec_length())
+        power_padding_count = MAX_POWER_COUNT - len(power_vectors)
+        power_padding = torch.zeros(power_padding_count, Power.get_vec_length())
+        powers_tensor = torch.cat([powers_tensor, power_padding], dim=0).flatten()
+
+        # 4. 拼接所有特征向量
+        return torch.cat([block_tensor, energy_tensor, orbs_tensor, powers_tensor])
 
     @classmethod
     def from_json(cls, json_object):
         player = cls(json_object["max_hp"], json_object["current_hp"], json_object["block"], json_object["energy"])
         player.powers = [Power.from_json(json_power) for json_power in json_object["powers"]]
-        player.orbs = [Orb.from_json(orb) for orb in json_object["orbs"]]
+        player.orbs = [Orb.from_json(orb) for orb in json_object.get("orbs", []) if orb.get("id") is not None]
         return player
-
 
 class Monster(Character):
 
     def __init__(self, name, monster_id, max_hp, current_hp, block, intent, half_dead, is_gone, move_id=-1, last_move_id=None, second_last_move_id=None, move_base_damage=0, move_adjusted_damage=0, move_hits=0):
         super().__init__(max_hp, current_hp, block)
         self.name = name
-        self.monster_id = monster_id
-        self.intent = intent
-        self.half_dead = half_dead
-        self.is_gone = is_gone
-        self.move_id = move_id
-        self.last_move_id = last_move_id
+        self.monster_id = monster_id 
+        self.intent = intent # one-hot量化
+        self.half_dead = half_dead # one-hot量化
+        self.is_gone = is_gone # one-hot量化 
+        self.move_id = move_id # 不需要量化。并不是很懂是啥意思，但是我认为只要有intent和move_adjusted_damage就够了
+        self.last_move_id = last_move_id 
         self.second_last_move_id = second_last_move_id
-        self.move_base_damage = move_base_damage
-        self.move_adjusted_damage = move_adjusted_damage
-        self.move_hits = move_hits
+        self.move_base_damage = move_base_damage # 正态分布归一化，最多应该就50吧
+        self.move_adjusted_damage = move_adjusted_damage # 正态分布归一化，强化后也50好了
+        self.move_hits = move_hits # 正态分布归一化，一般来说都是3以内
         self.monster_index = 0
+    @classmethod
+    def get_vec_length(self):
+        return 23
+    def get_vector(self):
+        """将怪物属性转换为固定长度的向量表示（优化后）"""
+        # 1. 多类别离散特征：Intent（需one-hot，类别数=len(Intent)）
+        one_hot_intent = nn.functional.one_hot(
+            torch.tensor(int(self.intent.value) - 1, dtype=torch.long),  # 输入必须是long类型
+            num_classes=len(Intent)
+        ).float()  # 转float，与其他特征类型一致
 
+        # 2. bool类型特征：用1维0/1编码（替代2维one-hot）
+        bool_vec = torch.tensor([
+            int(self.half_dead),
+            int(self.is_gone)
+        ], dtype=torch.float32)
+
+        # 3. 连续特征：正态分布归一化（统一打包为tensor）
+        continuous_vec = torch.tensor([
+            normal_normalize(self.move_base_damage, 0, 50),
+            normal_normalize(self.move_adjusted_damage, 0, 50),
+            normal_normalize(self.move_hits, 0, 3)
+        ], dtype=torch.float32)
+
+        # 4. hash特征：怪物ID+名称的归一化hash（直接转1维tensor）
+        hash_vec = torch.tensor([get_hash_val_normalized(f"{self.monster_id}{self.name}")], dtype=torch.float32)
+
+        # 一次性拼接所有特征（高效且清晰）
+        final_vec = torch.cat([
+            one_hot_intent,
+            bool_vec,
+            continuous_vec,
+            hash_vec
+        ])
+
+        return final_vec
     @classmethod
     def from_json(cls, json_object):
         name = json_object["name"]
@@ -121,3 +232,32 @@ class Monster(Character):
                         return False
                 return True
         return False
+
+if __name__ == "__main__":
+    # 测试Monster
+    # monster = Monster("test", 1, 100, 100, 0, Intent.ATTACK, False, False, 0, None, None, 10, 10, 3)
+    # vec = monster.get_vector()
+    # print(vec)
+
+    orb = {"passive_amount":3,"name":"闪电","id":"Lightning","evoke_amount":8}
+    # 测试orb的读取
+    # orb_obj = Orb.from_json(orb)
+    # print(orb_obj.get_vector())
+
+    player_json = {
+        "orbs": [],
+        "current_hp": 36,
+        "block": 0,
+        "max_hp": 70,
+        "powers": [
+            {
+                "amount": 3,
+                "just_applied": False,
+                "name": "虚弱",
+                "id": "Weakened"
+            }
+        ],
+        "energy": 1
+    }
+    player_obj = Player.from_json(player_json)
+    print(player_obj.get_vector())

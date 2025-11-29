@@ -3,11 +3,12 @@ import queue
 import threading
 import json
 import collections
+from typing import Optional
 
 from spirecomm.spire.game import Game
 from spirecomm.spire.screen import ScreenType
 from spirecomm.communication.action import Action, StartGameAction
-
+from spirecomm.spire.character import PlayerClass
 
 def read_stdin(input_queue):
     """Read lines from stdin and write them to a queue
@@ -50,7 +51,7 @@ def write_stdout(output_queue):
 class Coordinator:
     """An object to coordinate communication with Slay the Spire"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.input_queue = queue.Queue()
         self.output_queue = queue.Queue()
         self.input_thread = threading.Thread(target=read_stdin, args=(self.input_queue,))
@@ -84,6 +85,10 @@ class Coordinator:
         :type message: str
         :return: None
         """
+        # 在此处添加日志记录，记录所有即将发送的指令
+        with open('sent_commands.txt', 'a', encoding='utf-8') as f:
+            f.write(message + '\n')
+
         self.output_queue.put(message)
         self.game_is_ready = False
 
@@ -178,15 +183,16 @@ class Coordinator:
             if perform_callbacks:
                 if self.last_error is not None:
                     self.action_queue.clear()
-                    new_action = self.error_callback(self.last_error)
-                    self.add_action_to_queue(new_action)
+                    if self.error_callback:
+                        new_action = self.error_callback(self.last_error)
+                        self.add_action_to_queue(new_action)
                 elif self.in_game:
-                    if len(self.action_queue) == 0 and perform_callbacks:
+                    if len(self.action_queue) == 0 and self.state_change_callback:
                         new_action = self.state_change_callback(self.last_game_state)
                         self.add_action_to_queue(new_action)
                 elif self.stop_after_run:
                     self.clear_actions()
-                else:
+                elif self.out_of_game_callback:
                     new_action = self.out_of_game_callback()
                     self.add_action_to_queue(new_action)
             return True
@@ -226,4 +232,3 @@ class Coordinator:
             return self.last_game_state.screen.victory
         else:
             return False
-

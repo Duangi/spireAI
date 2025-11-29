@@ -3,7 +3,7 @@ import numpy as np
 from unittest.mock import Mock, patch
 from spirecomm.spire.game import Game
 from spirecomm.spire.card import Card
-from dqn import DQNAgent, DQN, GameStateProcessor, CardManager
+from dqn_core import DQNAgent, DQN, GameStateProcessor, CardManager
 
 # -------------------- 辅助函数：模拟游戏状态 --------------------
 def mock_game_state():

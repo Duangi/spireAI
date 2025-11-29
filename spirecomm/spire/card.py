@@ -1,8 +1,13 @@
 from enum import Enum
 import torch
 import torch.nn as nn
-import json
-import os
+
+import xxhash
+import numpy as np
+from dataclasses import dataclass, field
+from spirecomm.utils.data_processing import minmax_normalize, get_hash_val_normalized
+
+MAX_UINT64 = 2**64 - 1
 
 class CardType(Enum):
     ATTACK = 1
@@ -10,7 +15,6 @@ class CardType(Enum):
     POWER = 3
     STATUS = 4
     CURSE = 5
-
 
 class CardRarity(Enum):
     BASIC = 1
@@ -20,22 +24,70 @@ class CardRarity(Enum):
     SPECIAL = 5
     CURSE = 6
 
-
+@dataclass
 class Card:
-    def __init__(self, card_id, name, card_type, rarity, upgrades=0, has_target=False, cost=0, uuid="", misc=0, price=0, is_playable=False, exhausts=False):
-        self.card_id = card_id
-        self.name = name
-        self.type = card_type
-        self.rarity = rarity
-        self.upgrades = upgrades
-        self.has_target = has_target
-        self.cost = cost
-        self.uuid = uuid
-        self.misc = misc
-        self.price = price
-        self.is_playable = is_playable
-        self.exhausts = exhausts
+    card_id: str = field(default="")
+    name: str = field(default="")
+    card_type: CardType = field(default=CardType.ATTACK)
+    rarity: CardRarity = field(default=CardRarity.COMMON)
+    upgrades: int = field(default=0)
+    has_target: bool = field(default=False)
+    cost: int = field(default=0)
+    uuid: str = field(default="")
+    misc: int = field(default=0)
+    is_playable: bool = field(default=False)
+    exhausts: bool = field(default=False)
 
+    
+
+    def __eq__(self, other):
+        return self.uuid == other.uuid
+    
+    # 将数据映射到0-1之间
+    def normalize(self, x, max):
+        return x / (max)
+    
+    def get_vector(self):
+        """将卡牌属性转换为固定长度的向量表示"""
+        # 1. 连续特征（已归一化）
+        continuous_vec = torch.tensor([
+            self.card_level_normalize_piecewise(self.upgrades),
+            minmax_normalize(self.cost, 0, 10),
+        ], dtype=torch.float32)
+
+        # 2. 多类别离散特征（需one-hot编码，类别数≥3）
+        one_hot_card_type = nn.functional.one_hot(
+            torch.tensor(self.card_type.value - 1, dtype=torch.long),  # 确保long类型
+            num_classes=5
+        ).float()  # 转float与其他向量一致
+        one_hot_rarity = nn.functional.one_hot(
+            torch.tensor(self.rarity.value - 1, dtype=torch.long),
+            num_classes=6
+        ).float()
+
+        # 3. bool类型特征（1维0/1编码，替代2维one-hot）
+        bool_vec = torch.tensor([
+            int(self.has_target),
+            int(self.is_playable),
+            int(self.exhausts)
+        ], dtype=torch.float32)
+
+        # 4. uuid hash特征
+        hash_vec = get_hash_val_normalized(self.uuid)
+
+        # 一次性拼接所有向量（减少重复cat操作，更高效）
+        final_vec = torch.cat([
+            continuous_vec,
+            one_hot_card_type,
+            one_hot_rarity,
+            bool_vec,
+            hash_vec
+        ])
+
+        return final_vec
+    @classmethod
+    def get_vec_length(self):
+        return 17
     @classmethod
     def from_json(cls, json_object):
         return cls(
@@ -48,76 +100,49 @@ class Card:
             cost=json_object["cost"],
             uuid=json_object["uuid"],
             misc=json_object.get("misc", 0),
-            price=json_object.get("price", 0),
             is_playable=json_object.get("is_playable", False),
             exhausts=json_object.get("exhausts", False)
         )
-
-    def __eq__(self, other):
-        return self.uuid == other.uuid
     
-    
-
-class CardManager:
-    def __init__(self, filename="cards.json"):
-        self.filename = os.path.join(os.path.dirname(__file__),filename)
-        self.cards = {}
+    def card_level_normalize_piecewise(self, x) -> torch.Tensor:
+        """
+        分段函数:x=1→y=0.5,前期快涨，后期边际递减
+        段1(0≤x≤1):线性快涨(0→0.5)
+        段2(1<x≤5):指数快涨(0.5→0.85)
+        段3(x>5):对数缓涨(0.85→1.0)
+        """
+        # 确保输入转为PyTorch标量张量（支持梯度）
+        if not isinstance(x, torch.Tensor):
+            x = torch.tensor(x, dtype=torch.float32)
+        assert x.ndim == 0, "输入必须是标量（单个数值），不能是批量张量"
         
-        # 从文件中读取max_index
-        if os.path.exists(self.filename):
-            with open(self.filename, 'r') as f:
-                self.cards = json.load(f)
+        # 分段逻辑（标量专属，简洁高效，可导）
+        if x <= 1:
+            # 段1（0≤x≤1）：线性快涨，x=1→y=0.5
+            y = 0.5 * x
+        elif 1 < x <= 5:
+            # 段2（1<x≤5）：指数快涨，x=5→y=0.85
+            y = 0.5 + 0.35 * (1 - torch.exp(-0.8 * (x - 1)))
         else:
-            # 打开文件并往里面存储self.cards
-            with open(self.filename, 'w') as f:
-                json.dump(self.cards, f)
-    def get_abspath(self):
-        path = os.path.abspath(__file__)
-        # 获取当前脚本所在的目录
-        dir = os.path.dirname(path)
-        return dir
-
-    def get_card_index(self, card:Card):
-        if card.card_id in self.cards:
-            return self.cards[card.card_id]
-        else:
-            return self.add_card(card)
-
-    # 做一个只能往里加卡牌的功能
-    def add_card(self, card:Card):
-        # 判断self.cards里面是否有和card.uuid相同的key
-        if card.card_id in self.cards:
-            return self.cards[card.card_id]
-        else:
-            # 如果没有，那么就把card.uuid加进去
-            self.cards[card.card_id] = len(self.cards)
-            # 再把self.cards写入文件
-            with open( self.filename, 'w') as f:
-                json.dump(self.cards, f)
-            return self.cards[card.card_id]
+            # 段3（x>5）：对数缓涨，趋近于1，边际递减
+            y = 0.85 + 0.15 * (torch.log1p(x - 5) / torch.log1p(torch.tensor(25.0)))
         
-    def get_card_embedding_vector(self, card:Card):
-        # id是字符串，因此需要使用embedding层转化为向量
-        # 游戏中大约有400张卡牌，因此embedding的维度可以设置为20
-        embedding_layer = nn.Embedding(num_embeddings=500, embedding_dim=20)
-        
-        index = self.get_card_index(card)
-        index_tensor = torch.tensor([int(index)], dtype=torch.long)
-        index_vector = embedding_layer(index_tensor)
-        # 将一些卡牌的属性转化为向量
-        ntype = self.normalize(int(card.type.value), max=5)
-        nrarity = self.normalize(int(card.rarity.value), max=6)
-        nupgrades = self.normalize(int(card.upgrades), max=1)
-        nhas_target = self.normalize(int(card.has_target), max=1)
-        ncost = self.normalize(int(card.cost), max=3)
-        # 将index_vector和fixed_vector合并
-        fixed_vector = torch.tensor([ntype, nrarity, nupgrades, nhas_target, ncost], dtype=torch.float32)
-        index_vector = index_vector.view(-1)
-        # fixed_vector = tf.expand_dims(fixed_vector, axis=0)
-        embedded_vector = torch.cat([index_vector, fixed_vector], dim=0)
-        
-        return embedded_vector
-    
-    # 将数据映射到0-1之间
-    def normalize(self, x, max):
-        return x / (max)
+        # 限制值域在[0,1]，避免极端值
+        return torch.clamp(y, 0.0, 1.0)
+if __name__ == "__main__":
+    # 测试vector输出
+    card = Card(
+        card_id="test_card",
+        name="Test Card",
+        card_type=CardType.ATTACK,
+        rarity=CardRarity.COMMON,
+        upgrades=3,
+        has_target=False,
+        cost=2,
+        uuid="test_uuid_12345",
+        misc=0,
+        is_playable=False,
+        exhausts=False
+    )
+    vec = card.get_vector()
+    print(f"Card Vector Shape: {vec.shape}")
