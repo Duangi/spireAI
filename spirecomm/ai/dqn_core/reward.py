@@ -49,53 +49,54 @@ class RewardCalculator:
         total_reward = 0.0
 
         # 确保状态有效
-        if not prev_state or not next_state:
+        if prev_state is None or next_state is None:
             return 0.0
 
         # --- 1. 战斗内奖励 (只有在战斗中才计算) ---
-        if prev_state['in_game'] and next_state['in_game'] and 'monsters' in prev_state:
+        if prev_state.in_game and next_state.in_game and prev_state.in_combat:
             # 计算对敌人造成的总伤害
-            prev_total_hp = sum(m['current_hp'] for m in prev_state['monsters'])
-            next_total_hp = sum(m['current_hp'] for m in next_state['monsters'])
+            prev_total_hp = sum(m.current_hp for m in prev_state.monsters)
+            next_total_hp = sum(m.current_hp for m in next_state.monsters)
             damage_dealt = prev_total_hp - next_total_hp
             if damage_dealt > 0:
                 total_reward += damage_dealt * self.DAMAGE_DEALT_MULTIPLIER
 
             # 计算自身受到的伤害
-            damage_taken = prev_state['player']['current_hp'] - next_state['player']['current_hp']
-            if damage_taken > 0:
-                total_reward += damage_taken * self.DAMAGE_TAKEN_MULTIPLIER
+            if prev_state.player is not None and next_state.player is not None:
+                damage_taken = prev_state.player.current_hp - next_state.player.current_hp
+                if damage_taken > 0:
+                    total_reward += damage_taken * self.DAMAGE_TAKEN_MULTIPLIER
 
             # 检查是否浪费能量 (仅在结束回合时触发)
-            if prev_state['turn'] < next_state['turn']: # 这标志着一个回合的结束
-                wasted_energy = prev_state['player']['energy']
+            if prev_state.turn < next_state.turn and prev_state.player is not None: # 这标志着一个回合的结束
+                wasted_energy = prev_state.player.energy
                 if wasted_energy > 0:
                     total_reward += wasted_energy * self.WASTE_ENERGY_PENALTY
 
         # --- 2. 战斗结果奖励 ---
         # 赢得战斗: 从战斗状态进入非战斗状态
-        if prev_state['in_combat'] and not next_state['in_combat']:
+        if prev_state.in_combat and not next_state.in_combat:
             # 检查是否是最终BOSS战胜利
-            if prev_state['floor'] == 55:
+            if prev_state.floor == 55:
                 total_reward += self.WIN_FINAL_BOSS_REWARD
             else:
                 total_reward += self.WIN_BATTLE_REWARD
                 # 检查是否是幕BOSS战胜利
-                if prev_state['floor'] == 17:
+                if prev_state.floor == 17:
                     total_reward += self.WIN_ACT1_BOSS_BONUS
-                elif prev_state['floor'] == 34:
+                elif prev_state.floor == 34:
                     total_reward += self.WIN_ACT2_BOSS_BONUS
-                elif prev_state['floor'] == 51:
+                elif prev_state.floor == 51:
                     total_reward += self.WIN_ACT3_BOSS_BONUS
         
         # 输掉战斗: 游戏结束
-        if prev_state['in_game'] and not next_state['in_game']:
+        if prev_state.in_game and not next_state.in_game:
             total_reward += self.LOSE_BATTLE_REWARD
 
         # --- 3. 游戏进程奖励 ---
-        floor_change = next_state['floor'] - prev_state['floor']
+        floor_change = next_state.floor - prev_state.floor
         if floor_change > 0:
-            current_floor = prev_state['floor']
+            current_floor = prev_state.floor
             if 1 <= current_floor <= 17:
                 total_reward += floor_change * self.FLOOR_INCREASE_ACT1
             elif 18 <= current_floor <= 34:

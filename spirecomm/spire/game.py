@@ -57,6 +57,7 @@ class Game:
     act_boss: str
 
     # Combat state
+    in_game: bool
     in_combat: bool
     player: Player
     monsters: List[Monster]
@@ -207,11 +208,16 @@ class Game:
         return torch.cat([p.flatten() for p in parts])
         
     @classmethod
-    def from_json(cls, json_state, available_commands):
+    def from_json(cls, communication_state, available_commands=None):
         # 使用 __new__ 创建实例以避免调用需要参数的 __init__
         game = cls.__new__(cls)
+
+        # 兼容旧的调用方式，同时处理新的顶层状态
+        # 如果 available_commands 是 None，说明传入的是完整的 communication_state
+        json_state = communication_state.get("game_state", {}) if available_commands is None else communication_state
+        available_commands = communication_state.get("available_commands", []) if available_commands is None else available_commands
         
-        # 从json_state中获取游戏状态
+        game.in_game = communication_state.get("in_game", False)
         game.current_action = json_state.get("current_action", None)
         game.current_hp = json_state.get("current_hp")
         game.max_hp = json_state.get("max_hp")
