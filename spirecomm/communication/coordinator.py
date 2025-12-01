@@ -185,7 +185,8 @@ class Coordinator:
                     self.action_queue.clear()
                     if self.error_callback:
                         new_action = self.error_callback(self.last_error)
-                        self.add_action_to_queue(new_action)
+                        if new_action is not None:
+                            self.add_action_to_queue(new_action)
                 elif self.in_game:
                     if len(self.action_queue) == 0 and self.state_change_callback:
                         new_action = self.state_change_callback(self.last_game_state)
@@ -195,7 +196,7 @@ class Coordinator:
                 elif self.stop_after_run:
                     self.clear_actions()
                 elif self.out_of_game_callback:
-                    new_action = self.out_of_game_callback()
+                    new_action = self.out_of_game_callback(self.last_game_state)
                     # 确保放入队列的是Action对象，而不是字符串
                     if new_action is not None:
                         self.add_action_to_queue(Action(new_action))

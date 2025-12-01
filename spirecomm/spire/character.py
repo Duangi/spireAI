@@ -151,6 +151,14 @@ class Player(Character):
         player.powers = [Power.from_json(json_power) for json_power in json_object["powers"]]
         player.orbs = [Orb.from_json(orb) for orb in json_object.get("orbs", []) if orb.get("id") is not None]
         return player
+    
+    def to_json(self):
+        return {
+            "max_hp": self.max_hp,
+            "current_hp": self.current_hp,
+            "block": self.block,
+            "energy": self.energy
+        }
 
 class Monster(Character):
 
@@ -232,6 +240,16 @@ class Monster(Character):
                         return False
                 return True
         return False
+    
+    def to_json(self):
+        return {
+            "name": self.name,
+            "max_hp": self.max_hp,
+            "current_hp": self.current_hp,
+            "block": self.block,
+            "half_dead": self.half_dead,
+            "is_gone": self.is_gone,
+        }
 
 if __name__ == "__main__":
     # 测试Monster

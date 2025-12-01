@@ -1,12 +1,17 @@
 import torch
+import json
 import sys
 from typing import Optional
+from spirecomm.ai import absolute_logger
 from spirecomm.ai.dqn_core.algorithm import DQN
 from spirecomm.ai.dqn_core.state import GameStateProcessor
 from spirecomm.ai.dqn_core.reward import RewardCalculator
+from spirecomm.spire import game
 from spirecomm.spire.character import PlayerClass
 from spirecomm.ai.progress_logger import ProgressLogger
+from spirecomm.ai.absolute_logger import AbsoluteLogger
 from spirecomm.spire.game import Game
+from spirecomm.ai.tests.test_case.game_state_test_cases import test_cases
 
 
 class DQNAgent:
@@ -21,7 +26,9 @@ class DQNAgent:
         self.state_processor = GameStateProcessor()
         self.reward_calculator = RewardCalculator()
         self.progress_logger = ProgressLogger()
-        
+        self.absolute_logger = AbsoluteLogger()
+        self.absolute_logger.start_episode()
+
         # 假设状态向量大小为 10358
         state_size = 10358 
         self.dqn_algorithm = DQN(state_size, self.state_processor)
@@ -44,7 +51,7 @@ class DQNAgent:
         self.previous_action = None
         self.previous_state_tensor = None
 
-    def get_next_action_in_game(self, game_state):
+    def get_next_action_in_game(self, game_state:Game):
         """
         这是由Coordinator在游戏状态改变时调用的核心回调函数。
         """
@@ -54,7 +61,7 @@ class DQNAgent:
         if not self.play_mode:
             if self.previous_game_state is not None and self.previous_action is not None:
                 # a. 计算奖励
-                reward = self.reward_calculator.calculate(self.previous_game_state, game_state)
+                reward = self.reward_calculator.calculate(self.previous_game_state, game_state, self.previous_action)
                 
                 # b. 处理新状态
                 next_state_tensor = self.state_processor.process(game_state)
@@ -84,6 +91,10 @@ class DQNAgent:
         # 3. 使用DQN算法选择一个动作
         chosen_action = self.dqn_algorithm.choose_action(current_state_tensor, masks)
 
+        # 4. 如果算法没有选择任何动作（例如，在状态转换期间），则不执行任何操作
+        if chosen_action is None:
+            return None
+
         # --- 可视化日志记录 ---
         if self.previous_game_state is not None:
             # 获取所有合法动作的Q值用于记录
@@ -91,7 +102,9 @@ class DQNAgent:
 
             log_info = {
                 'q_values': q_values_log,
-                'chosen_action': chosen_action.to_string(),
+                'action_taken_at_prev_state': self.previous_action.to_string() if self.previous_action else "None",
+                'reward_for_prev_action': reward,
+                'chosen_action_for_current_state': chosen_action.to_string(),
                 'prev_player': self.previous_game_state.player.to_json() if self.previous_game_state.player else {},
                 'next_player': game_state.player.to_json() if game_state.player else {},
                 'prev_monsters': [m.to_json() for m in self.previous_game_state.monsters],
@@ -99,7 +112,7 @@ class DQNAgent:
                 'reward': reward
             }
             self.progress_logger.log_step(log_info)
-
+            self.absolute_logger.write(log_info)
         # --- 为下一步做准备 ---
         # 存储当前的状态和动作用于下一次学习
         self.previous_game_state = game_state
@@ -122,11 +135,18 @@ class DQNAgent:
         self.previous_action = None
         self.previous_state_tensor = None
         self.progress_logger.start_episode() # 新的一局游戏开始
+        self.absolute_logger.start_episode()
         return self.state_processor.get_start_game_action(game_state)
 
     def handle_error(self, error):
-        # 简单的错误处理
+        """
+        处理来自协调器的错误回调。
+        当一个动作无效时，这通常意味着AI对游戏状态的理解出现了偏差。
+        一个稳健的策略是清空动作队列，并根据当前最新的游戏状态重新决策。
+        """
         print(f"Received error: {error}", file=sys.stderr)
+        # 返回 None 会导致协调器清空动作队列，然后在下一个循环中根据最新状态重新调用 get_next_action_in_game
+        return None
 
     def change_class(self, chosen_class: PlayerClass):
         # 这个方法可以被主循环调用，但目前我们的Agent是通用的，所以不需要做什么
@@ -138,3 +158,28 @@ class DQNAgent:
         这是提供给 train.py 在每局结束后调用的接口。
         """
         self.dqn_algorithm.train(batch_size)
+
+if __name__ == "__main__": 
+    # 使用测试用例测试当前DQNAgent的运行
+    agent = DQNAgent(play_mode=False)
+    # 使用test_cases这个list来测试dqn
+    successes = []
+    failures = []
+    for i, test_case in enumerate(test_cases[:10]):
+        try:
+            game_obj = Game.from_json(test_case, available_commands=test_case.get("available_commands", []))
+            # 根据是否处于战斗选择不同的回调
+            if getattr(game_obj, "in_combat", False):
+                action = agent.get_next_action_in_game(game_obj)
+            else:
+                action = agent.get_next_action_out_of_game(game_obj)
+
+            print(f"[CASE {i}] selected action: {action}")
+            successes.append((i, action))
+        except Exception as exc:
+            print(f"[CASE {i}] ERROR: {exc}", file=sys.stderr)
+            failures.append((i, exc))
+
+    print(f"Finished sample-run: successes={len(successes)}, failures={len(failures)}")
+    if failures:
+        sys.exit(1)

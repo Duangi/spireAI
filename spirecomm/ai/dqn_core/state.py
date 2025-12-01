@@ -1,7 +1,8 @@
 import torch
 from dataclasses import dataclass, field
+from spirecomm.ai.constants import MAX_CHOOSE_COUNT, MAX_HAND_SIZE, MAX_MONSTER_COUNT, MAX_POTION_COUNT
 from spirecomm.spire.game import Game
-from spirecomm.ai.dqn_core.action import ActionMapper, BaseAction, PlayAction, ChooseAction, PotionUseAction, SingleAction, ActionType, DecomposedActionType, MAX_MONSTER_COUNT
+from spirecomm.ai.dqn_core.action import  BaseAction, PlayAction, ChooseAction, PotionUseAction, SingleAction, ActionType, DecomposedActionType
 from typing import List
 import numpy as np
 
@@ -13,9 +14,6 @@ class GameStateProcessor:
     以便作为神经网络的输入。
     这个实现将具体的向量化逻辑委托给 `Game` 对象自身的 `get_vector` 方法。
     """
-
-    def __post_init__(self):
-        self.action_mapper = ActionMapper()
 
     def get_state_tensor(self, game: Game):
         """
@@ -40,10 +38,10 @@ class GameStateProcessor:
         
         # 初始化所有掩码为 False
         action_type_mask = np.zeros(len(DecomposedActionType), dtype=bool)
-        play_card_mask = np.zeros(self.action_mapper.max_play_dim, dtype=bool)
+        play_card_mask = np.zeros(MAX_HAND_SIZE, dtype=bool)
         target_monster_mask = np.zeros(MAX_MONSTER_COUNT, dtype=bool)
-        choose_option_mask = np.zeros(self.action_mapper.max_choose_dim, dtype=bool)
-        potion_mask = np.zeros(self.action_mapper.max_potion_dim, dtype=bool)
+        choose_option_mask = np.zeros(MAX_CHOOSE_COUNT, dtype=bool)
+        potion_mask = np.zeros(MAX_POTION_COUNT, dtype=bool)
 
         for action in available_actions:
             if hasattr(action, 'decomposed_type'):
@@ -73,9 +71,10 @@ class GameStateProcessor:
         actions = []
         
         if game.choice_available:
-            # 你是对的！选项列表是 game.choice_list
-            for i in range(len(game.choice_list)):
-                actions.append(ChooseAction(type=ActionType.CHOOSE, choice_idx=i, decomposed_type=DecomposedActionType.CHOOSE))
+            # 遍历所有选项，但永远排除 "cancel"
+            for i, choice_str in enumerate(game.choice_list):
+                if choice_str != "cancel":
+                    actions.append(ChooseAction(type=ActionType.CHOOSE, choice_idx=i, decomposed_type=DecomposedActionType.CHOOSE))
 
         # 战斗中的动作
         if game.in_combat:
@@ -107,8 +106,8 @@ class GameStateProcessor:
         # 正确的判断方式是检查 available_commands
         if "proceed" in game.available_commands:
             actions.append(SingleAction(type=ActionType.PROCEED, decomposed_type=DecomposedActionType.PROCEED))
-        if "cancel" in game.available_commands:
-            actions.append(SingleAction(type=ActionType.CANCEL, decomposed_type=DecomposedActionType.CANCEL))
+        if "skip" in game.available_commands:
+            actions.append(SingleAction(type=ActionType.SKIP, decomposed_type=DecomposedActionType.SKIP))
         
         return actions
 

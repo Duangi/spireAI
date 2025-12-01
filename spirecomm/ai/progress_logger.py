@@ -18,14 +18,22 @@ class ProgressLogger:
         if not os.path.exists(self.log_dir):
             os.makedirs(self.log_dir)
 
+    def __del__(self):
+        """析构函数，确保在对象销毁时文件能被正确关闭。"""
+        if self.file_handle and not self.file_handle.closed:
+            print(f"ProgressLogger: Force closing log file due to unexpected exit: {self.log_file_path}", file=sys.stderr)
+            self.file_handle.close()
+            # 可以在这里添加一个标记，表明是非正常结束
+            final_path = self.log_file_path.replace(".txt", "_INCOMPLETE.txt")
+            os.rename(self.log_file_path, final_path)
+
     def start_episode(self):
         """在一局游戏开始时调用。"""
         self.step_count = 0
         self.start_time = datetime.datetime.now()
-        # 暂时创建一个临时文件
-        self.log_file_path = os.path.join(self.log_dir, f"temp_{self.start_time.strftime('%Y%m%d%H%M%S')}.txt")
+        self.log_file_path = os.path.join(self.log_dir, f"game_{self.start_time.strftime('%Y%m%d_%H%M%S')}.txt")
         self.file_handle = open(self.log_file_path, 'w', encoding='utf-8')
-
+        
     def log_step(self, step_info):
         """记录一步的详细信息。"""
         if not self.file_handle:
@@ -83,18 +91,13 @@ class ProgressLogger:
         if not self.file_handle:
             return
 
-        self.file_handle.close()
         end_time = datetime.datetime.now()
-        
-        # 构建最终文件名
-        start_str = self.start_time.strftime('%Y%m%d%H%M%S')
-        end_str = end_time.strftime('%Y%m%d%H%M%S')
-        final_filename = f"{start_str}_start_to_{end_str}_end.txt"
-        final_path = os.path.join(self.log_dir, final_filename)
-        
-        # 重命名文件
-        os.rename(self.log_file_path, final_path)
-        print(f"Progress log saved to: {final_path}", file=sys.stderr)
+        duration = end_time - self.start_time
+        self.file_handle.write(f"\n--- Episode Finished ---\n")
+        self.file_handle.write(f"End Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        self.file_handle.write(f"Total Duration: {duration}\n")
+        self.file_handle.close()
+        print(f"Progress log saved to: {self.log_file_path}", file=sys.stderr)
 
         # 重置状态
         self.log_file_path = None

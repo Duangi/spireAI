@@ -5,7 +5,7 @@ import torch
 import torch.optim as optim
 import torch.nn as nn
 
-from spirecomm.ai.dqn_core.action import BaseAction, DecomposedActionType, PlayAction, ChooseAction, PotionUseAction, SingleAction, ActionType
+from spirecomm.ai.dqn_core.action import BaseAction, DecomposedActionType, PlayAction, ChooseAction, PotionDiscardAction, PotionUseAction, SingleAction, ActionType
 from spirecomm.ai.dqn_core.model import DQNModel
 from spirecomm.ai.dqn_core.state import GameStateProcessor
 
@@ -122,6 +122,10 @@ class DQN:
         # 应用掩码，将非法动作的Q值设为负无穷
         action_type_q[~action_type_mask] = -float('inf')
         
+        # 如果所有动作类型都被屏蔽了，直接返回None
+        if not action_type_mask.any():
+            return None
+
         if self.is_training:
             # 训练模式：Boltzmann 探索
             action_type_probs = torch.softmax(action_type_q / self.temperature, dim=-1)
@@ -171,7 +175,7 @@ class DQN:
                 choice_idx = torch.argmax(choose_q).item()
             return ChooseAction(type=ActionType.CHOOSE, choice_idx=choice_idx)
 
-        elif action_type == DecomposedActionType.POTION:
+        elif action_type == DecomposedActionType.POTION_USE:
             # 需要选择使用哪个药水，以及可能的目标
             potion_q = arg_q['potion'].squeeze(0)
             potion_mask = torch.from_numpy(masks['potion']).bool()
@@ -194,8 +198,24 @@ class DQN:
                 else:
                     target_idx = torch.argmax(target_q).item()
             
-            return PotionUseAction(type=ActionType.POTION, potion_idx=potion_idx, target_idx=target_idx)
-
+            # 修复：PotionUseAction 应该使用一个通用的动作类型，比如 ActionType.USE。
+            # ActionType 枚举中没有 POTION 成员。
+            # 假设 ActionType.USE 存在，并且是用于使用药水、遗物等的通用类型。
+            return PotionUseAction(type=ActionType.POTION_USE, potion_idx=potion_idx, target_idx=target_idx)
+        
+        elif action_type == DecomposedActionType.POTION_DISCARD:
+            # 需要选择丢弃哪个药水
+            potion_q = arg_q['potion'].squeeze(0)
+            # 假设丢弃药水的合法性掩码与使用药水相同
+            potion_mask = torch.from_numpy(masks['potion']).bool()
+            potion_q[~potion_mask] = -float('inf')
+            if self.is_training:
+                potion_probs = torch.softmax(potion_q / self.temperature, dim=-1)
+                potion_idx = torch.multinomial(potion_probs, 1).item()
+            else:
+                potion_idx = torch.argmax(potion_q).item()
+            return PotionDiscardAction(type=ActionType.POTION_DISCARD, potion_idx=potion_idx)
+            
         # 对于所有无参数的动作 (END, PROCEED, CANCEL, LEAVE, CONFIRM)
         else:
             # 这些动作没有参数，直接构建并返回SingleAction对象

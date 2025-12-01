@@ -10,3 +10,4 @@ MAX_POWER_COUNT = 20 # 最多9种通用buff，8种debuff，以及一些特殊buf
 MAX_CHOICES = 20 # 通用选择项的最大数量
 MAX_SHOP_ITEMS = 8 # 商店物品（7卡+1删牌）
 MAX_REST_OPTIONS = 6 # 休息处选项
+MAX_CHOOSE_COUNT = 100 # 假设可以选择100张牌，主要是在升级的时候

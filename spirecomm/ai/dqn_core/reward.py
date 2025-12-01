@@ -1,3 +1,7 @@
+from spirecomm.ai.dqn_core.action import BaseAction
+from spirecomm.spire.game import Game
+from spirecomm.ai.dqn_core.action import DecomposedActionType
+
 class RewardCalculator:
     """
     根据游戏状态的变化计算奖励值。
@@ -39,11 +43,12 @@ class RewardCalculator:
         # 战胜最终BOSS (55层心脏) 的巨大奖励
         self.WIN_FINAL_BOSS_REWARD = 2000.0
 
-    def calculate(self, prev_state, next_state):
+    def calculate(self, prev_state: Game, next_state:Game, action:BaseAction=None):
         """
         计算从 prev_state 转换到 next_state 所获得的奖励。
         :param prev_state: 动作执行前的游戏状态 (JSON/dict)
         :param next_state: 动作执行后的游戏状态 (JSON/dict)
+        :param action: 执行的动作对象
         :return: 一个浮点数，代表总奖励值
         """
         total_reward = 0.0
@@ -67,8 +72,8 @@ class RewardCalculator:
                 if damage_taken > 0:
                     total_reward += damage_taken * self.DAMAGE_TAKEN_MULTIPLIER
 
-            # 检查是否浪费能量 (仅在结束回合时触发)
-            if prev_state.turn < next_state.turn and prev_state.player is not None: # 这标志着一个回合的结束
+            # 检查是否浪费能量 (当执行 "END" 动作时触发)
+            if action is not None and action.decomposed_type == DecomposedActionType.END and prev_state.player is not None:
                 wasted_energy = prev_state.player.energy
                 if wasted_energy > 0:
                     total_reward += wasted_energy * self.WASTE_ENERGY_PENALTY
