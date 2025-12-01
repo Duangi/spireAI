@@ -158,28 +158,3 @@ class DQNAgent:
         这是提供给 train.py 在每局结束后调用的接口。
         """
         self.dqn_algorithm.train(batch_size)
-
-if __name__ == "__main__": 
-    # 使用测试用例测试当前DQNAgent的运行
-    agent = DQNAgent(play_mode=False)
-    # 使用test_cases这个list来测试dqn
-    successes = []
-    failures = []
-    for i, test_case in enumerate(test_cases[:10]):
-        try:
-            game_obj = Game.from_json(test_case, available_commands=test_case.get("available_commands", []))
-            # 根据是否处于战斗选择不同的回调
-            if getattr(game_obj, "in_combat", False):
-                action = agent.get_next_action_in_game(game_obj)
-            else:
-                action = agent.get_next_action_out_of_game(game_obj)
-
-            print(f"[CASE {i}] selected action: {action}")
-            successes.append((i, action))
-        except Exception as exc:
-            print(f"[CASE {i}] ERROR: {exc}", file=sys.stderr)
-            failures.append((i, exc))
-
-    print(f"Finished sample-run: successes={len(successes)}, failures={len(failures)}")
-    if failures:
-        sys.exit(1)

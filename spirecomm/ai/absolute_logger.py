@@ -9,6 +9,9 @@ class AbsoluteLogger:
     一个简单的日志记录器，用于将字符串内容写入指定路径的文件。
     """
     def __init__(self, log_file_path = "/Users/duang/Projects/spireAI/log/"):
+        # 如果是windows系统，换一个绝对路径D:\Projects\spireAI
+        if os.name == 'nt':
+            log_file_path = "D:/Projects/spireAI/log/"
         self.log_file_path = log_file_path
         self.file_handle = None
         self._ensure_dir_exists()
@@ -17,7 +20,7 @@ class AbsoluteLogger:
         """在一局游戏开始时调用。"""
         self.step_count = 0
         self.start_time = datetime.datetime.now()
-        self.log_file_path = os.path.join(self.log_file_path, f"{self.start_time.strftime('%Y.%m.%d')}{self.start_time.strftime('_%H:%M:%S')}.txt")
+        self.log_file_path = os.path.join(self.log_file_path, f"{self.start_time.strftime('%Y.%m.%d')}{self.start_time.strftime('_%H.%M.%S')}.txt")
         self.file_handle = open(self.log_file_path, 'w', encoding='utf-8')
     
     def _ensure_dir_exists(self):

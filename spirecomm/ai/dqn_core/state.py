@@ -1,5 +1,6 @@
 import torch
 from dataclasses import dataclass, field
+from spirecomm.ai import absolute_logger
 from spirecomm.ai.constants import MAX_CHOOSE_COUNT, MAX_HAND_SIZE, MAX_MONSTER_COUNT, MAX_POTION_COUNT
 from spirecomm.spire.game import Game
 from spirecomm.ai.dqn_core.action import  BaseAction, PlayAction, ChooseAction, PotionUseAction, SingleAction, ActionType, DecomposedActionType
