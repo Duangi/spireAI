@@ -1,17 +1,43 @@
 # 朝绝对路径进行txt内容的写入
 import datetime
+from math import log
 import os
 import sys
 import json
+from enum import Enum
+
+class LogType(Enum):
+    """
+    日志类型枚举类，用于指定日志的级别。
+    """
+    PROGRESS = 1
+    REWARD = 2
+    STATE = 3
 
 class AbsoluteLogger:
     """
     一个简单的日志记录器，用于将字符串内容写入指定路径的文件。
     """
-    def __init__(self, log_file_path = "/Users/duang/Projects/spireAI/log/"):
+    def __init__(self, log_type:LogType = LogType.PROGRESS):
         # 如果是windows系统，换一个绝对路径D:\Projects\spireAI
-        if os.name == 'nt':
-            log_file_path = "D:/Projects/spireAI/log/"
+        if log_type == LogType.PROGRESS:
+            if os.name == 'nt':
+                log_file_path = "D:/Projects/spireAI/log/"
+            else:
+                log_file_path = "/Users/duang/Projects/spireAI/log/"
+        elif log_type == LogType.REWARD:
+            if os.name == 'nt':
+                log_file_path = "D:/Projects/spireAI/reward_log/"
+            else:
+                log_file_path = "/Users/duang/Projects/spireAI/reward_log/"
+        elif log_type == LogType.STATE:
+            if os.name == 'nt':
+                log_file_path = "D:/Projects/spireAI/state_log/"
+            else:
+                log_file_path = "/Users/duang/Projects/spireAI/state_log/"
+        else:
+            raise ValueError(f"未知的日志类型: {log_type}")
+
         self.log_file_path = log_file_path
         self.file_handle = None
         self._ensure_dir_exists()

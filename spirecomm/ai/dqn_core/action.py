@@ -83,6 +83,7 @@ class PlayAction(BaseAction):
 @dataclass(frozen=True)
 class PotionDiscardAction(BaseAction):
     potion_idx: int  # 0-based
+    decomposed_type: DecomposedActionType = DecomposedActionType.POTION_DISCARD
     def __post_init__(self):
         if not (0 <= self.potion_idx < MAX_POTION_COUNT): # type: ignore
             raise ValueError(f"Potion丢弃索引{self.potion_idx}超出范围（0~{MAX_POTION_COUNT-1}）")

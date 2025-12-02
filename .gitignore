@@ -127,3 +127,6 @@ dmypy.json
 
 .vscode/
 log/
+reward_log/
+state_log/
+train_log/

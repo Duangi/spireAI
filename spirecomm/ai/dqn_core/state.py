@@ -1,3 +1,4 @@
+from re import S
 import torch
 from dataclasses import dataclass, field
 from spirecomm.ai import absolute_logger
@@ -6,6 +7,8 @@ from spirecomm.spire.game import Game
 from spirecomm.ai.dqn_core.action import  BaseAction, PlayAction, ChooseAction, PotionUseAction, SingleAction, ActionType, DecomposedActionType
 from typing import List
 import numpy as np
+from spirecomm.ai.absolute_logger import AbsoluteLogger, LogType
+import json
 
 @dataclass
 class GameStateProcessor:
@@ -15,7 +18,9 @@ class GameStateProcessor:
     以便作为神经网络的输入。
     这个实现将具体的向量化逻辑委托给 `Game` 对象自身的 `get_vector` 方法。
     """
-
+    absolute_logger: AbsoluteLogger = field(default_factory=lambda: AbsoluteLogger(LogType.STATE))
+    def __post_init__(self):
+        self.absolute_logger.start_episode()
     def get_state_tensor(self, game: Game):
         """
         从 Game 对象获取完整的、扁平化的状态向量。
@@ -36,7 +41,12 @@ class GameStateProcessor:
         根据当前游戏状态，生成所有分解动作的合法性掩码。
         """
         available_actions = self.get_available_actions(game_state)
-        
+        ava_commands = game_state.available_commands
+        # 移除"key","click","wait","state"等无实际意义的命令
+        ava_commands = [cmd for cmd in ava_commands if cmd not in ["key", "click", "wait", "state"]]
+        self.absolute_logger.write(f"\n可用命令列表: {ava_commands}\n")
+        self.absolute_logger.write(f"筛选之后结果: {[action.to_string() for action in available_actions]}\n")
+
         # 初始化所有掩码为 False
         action_type_mask = np.zeros(len(DecomposedActionType), dtype=bool)
         play_card_mask = np.zeros(MAX_HAND_SIZE, dtype=bool)
@@ -58,7 +68,15 @@ class GameStateProcessor:
                 potion_mask[action.potion_idx] = True
                 if action.target_idx is not None:
                     target_monster_mask[action.target_idx] = True
-        
+        self.absolute_logger.write("动作掩码生成完毕。\n")
+        # 每一个mask分别记录下来，且每一行显示10个元素
+        self.absolute_logger.write({
+            'action_mask':  str(action_type_mask.tolist()),
+            'play_mask': str(play_card_mask.tolist()),
+            'target_mask': str(target_monster_mask.tolist()),
+            'choose_mask': str(choose_option_mask.tolist()),
+            'potion_mask': str(potion_mask.tolist())
+        })
         return {
             'action_type': action_type_mask,
             'play_card': play_card_mask,

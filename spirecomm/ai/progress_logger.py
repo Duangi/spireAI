@@ -8,30 +8,49 @@ class ProgressLogger:
     记录并可视化一局游戏内AI的每一步决策过程。
     """
     def __init__(self, log_dir="progress"):
-        self.log_dir = log_dir
+        # 使用绝对路径，避免相对路径混淆导致与其它 logger 冲突
+        self.log_dir = os.path.abspath(log_dir)
         self.log_file_path = None
         self.file_handle = None
         self.start_time = None
         self.step_count = 0
         
-        # 确保日志目录存在
+        # 确保日志目录存在（使用 exist_ok=True 更稳健）
         if not os.path.exists(self.log_dir):
-            os.makedirs(self.log_dir)
+            os.makedirs(self.log_dir, exist_ok=True)
 
     def __del__(self):
-        """析构函数，确保在对象销毁时文件能被正确关闭。"""
-        if self.file_handle and not self.file_handle.closed:
-            print(f"ProgressLogger: Force closing log file due to unexpected exit: {self.log_file_path}", file=sys.stderr)
-            self.file_handle.close()
-            # 可以在这里添加一个标记，表明是非正常结束
-            final_path = self.log_file_path.replace(".txt", "_INCOMPLETE.txt")
-            os.rename(self.log_file_path, final_path)
+        """析构函数，确保在对象销毁时文件能被正确关闭并安全重命名为 INCOMPLETE（带异常保护）。"""
+        try:
+            if self.file_handle and not self.file_handle.closed:
+                print(f"ProgressLogger: Force closing log file due to unexpected exit: {self.log_file_path}", file=sys.stderr)
+                try:
+                    self.file_handle.close()
+                except Exception as e:
+                    print(f"ProgressLogger: failed to close file_handle: {e}", file=sys.stderr)
+                # 只有在原文件存在时才尝试重命名，重命名也要捕获异常
+                try:
+                    if self.log_file_path and os.path.exists(self.log_file_path):
+                        final_path = self.log_file_path.replace(".txt", "_INCOMPLETE.txt")
+                        # 避免覆盖已有文件
+                        if not os.path.exists(final_path):
+                            os.rename(self.log_file_path, final_path)
+                except Exception as e:
+                    print(f"ProgressLogger: failed to rename incomplete log: {e}", file=sys.stderr)
+        except Exception as e:
+            # 最后防护：确保 __del__ 不抛异常
+            print(f"ProgressLogger.__del__ unexpected error: {e}", file=sys.stderr)
 
     def start_episode(self):
         """在一局游戏开始时调用。"""
         self.step_count = 0
         self.start_time = datetime.datetime.now()
-        self.log_file_path = os.path.join(self.log_dir, f"game_{self.start_time.strftime('%Y%m%d_%H%M%S')}.txt")
+        # 再次确保目录存在（并发/外部修改时防护）
+        os.makedirs(self.log_dir, exist_ok=True)
+        # 生成更唯一的文件名，包含微秒和进程 id，降低与其他 logger 文件名冲突或被误当目录的概率
+        fname = f"game_{self.start_time.strftime('%Y%m%d_%H%M%S_%f')}_{os.getpid()}.txt"
+        self.log_file_path = os.path.join(self.log_dir, fname)
+        # 打开文件写入
         self.file_handle = open(self.log_file_path, 'w', encoding='utf-8')
         
     def log_step(self, step_info):
