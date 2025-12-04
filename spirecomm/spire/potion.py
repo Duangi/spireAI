@@ -9,6 +9,7 @@ class Potion:
     can_use: bool = field(default=False)
     can_discard: bool = field(default=False)
     requires_target: bool = field(default=False)
+    price: int = field(default=0)
 
     @classmethod
     def get_vec_length(self):
@@ -35,7 +36,8 @@ class Potion:
             name=json_object.get("name"),
             can_use=json_object.get("can_use", False),
             can_discard=json_object.get("can_discard", False),
-            requires_target=json_object.get("requires_target", False)
+            requires_target=json_object.get("requires_target", False),
+            price=json_object.get("price", 0)
         )
 if __name__ == "__main__":
     # 测试药水向量表示

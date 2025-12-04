@@ -22,8 +22,8 @@ if __name__ == "__main__":
 
     # --- 2. 定义训练超参数 ---
     NUM_EPISODES = 5000  # 总共训练5000局游戏
-    TARGET_UPDATE_FREQUENCY = 10 # 每 10 局游戏更新一次目标网络
-    SAVE_MODEL_FREQUENCY = 100 # 每 100 局游戏保存一次模型
+    TARGET_UPDATE_FREQUENCY = 4 # 每 4 局游戏更新一次目标网络
+    SAVE_MODEL_FREQUENCY = 4 # 每 4 局游戏保存一次模型
     TRAIN_BATCHES_PER_EPISODE = 64 # 每局游戏结束后，从经验池中采样训练的次数
     BATCH_SIZE = 32 # 每次训练时从经验池采样的大小
 
@@ -33,24 +33,19 @@ if __name__ == "__main__":
 
     for episode in range(1, NUM_EPISODES + 1):
         chosen_class = next(player_class_cycle)
-        print(f"--- Starting Episode {episode}/{NUM_EPISODES}, Class: {chosen_class.name} ---", file=sys.stderr)
         dqn_agent.change_class(chosen_class)
         result = coordinator.play_one_game(chosen_class)
-        print(f"--- Episode {episode} Finished. Result: {result} ---", file=sys.stderr)
 
         # --- 训练网络 ---
         # 在一局游戏结束后，进行多次训练
-        print(f"Training network for {TRAIN_BATCHES_PER_EPISODE} batches...", file=sys.stderr)
         for _ in range(TRAIN_BATCHES_PER_EPISODE):
             dqn_agent.learn(BATCH_SIZE)
 
         # --- 4. 周期性任务 ---
         # 每隔N局游戏，更新目标网络
         if episode % TARGET_UPDATE_FREQUENCY == 0:
-            print(f"Updating target network at episode {episode}", file=sys.stderr)
             dqn_agent.dqn_algorithm.update_target_net()
 
         # 每隔N局游戏，保存模型权重
         if episode % SAVE_MODEL_FREQUENCY == 0:
-            print(f"Saving model at episode {episode}", file=sys.stderr)
             torch.save(dqn_agent.dqn_algorithm.policy_net.state_dict(), f"dqn_model_episode_{episode}.pth")

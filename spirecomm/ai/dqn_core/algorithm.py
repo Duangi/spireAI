@@ -1,6 +1,9 @@
+from calendar import c
 import random
 from collections import deque
+from re import purge
 import numpy as np
+from sympy import false
 import torch
 import torch.optim as optim
 import torch.nn as nn
@@ -8,6 +11,11 @@ import torch.nn as nn
 from spirecomm.ai.dqn_core.action import BaseAction, DecomposedActionType, PlayAction, ChooseAction, PotionDiscardAction, PotionUseAction, SingleAction, ActionType
 from spirecomm.ai.dqn_core.model import DQNModel
 from spirecomm.ai.dqn_core.state import GameStateProcessor
+from spirecomm.spire.card import Card
+from spirecomm.spire.game import Game
+from spirecomm.spire.potion import Potion
+from spirecomm.spire.relic import Relic
+from spirecomm.spire.screen import ScreenType, ShopScreen
 
 class DQN:
     def __init__(self, state_size, state_processor):
@@ -22,6 +30,8 @@ class DQN:
         self.is_training = True # 默认为训练模式
         self.state_processor = state_processor
         
+        self.visited_shop = False  # 用于跟踪是否已经访问过商店
+
         # --- 神经网络 ---
         # 策略网络 (Policy Network): 用于决定下一步动作，我们会频繁更新它
         self.policy_net = DQNModel(state_size)
@@ -58,6 +68,7 @@ class DQN:
         predicted_q_values = []
         for i, action in enumerate(actions):
             # 动作类型的Q值
+            decomposed_type = action.decomposed_type
             q_val = pred_action_q[i, action.decomposed_type.value]
             # 如果动作有参数，加上参数的Q值
             if isinstance(action, PlayAction):
@@ -105,7 +116,7 @@ class DQN:
         """切换到推理模式，不进行探索。"""
         self.is_training = False
 
-    def choose_action(self, state_tensor, masks):
+    def choose_action(self, state_tensor, masks, game_state:Game):
         """
         使用 Boltzmann 探索 (Softmax 探索) 来选择一个分解式动作。
         Q值越高的动作被选择的概率越大。
@@ -149,15 +160,19 @@ class DQN:
             else:
                 card_idx = torch.argmax(play_card_q).item()
 
-            target_q = arg_q['target_monster'].squeeze(0)
-            target_mask = torch.from_numpy(masks['target_monster']).bool()
-            target_q[~target_mask] = -float('inf')
-            if self.is_training:
-                target_probs = torch.softmax(target_q / self.temperature, dim=-1)
-                target_idx = torch.multinomial(target_probs, 1).item()
-            else:
-                target_idx = torch.argmax(target_q).item()
-            
+            # 选中了牌之后，判断这个牌是否需要目标
+            target_idx = None
+            chosen_card:Card = game_state.hand[card_idx]
+            if chosen_card.has_target:
+                target_q = arg_q['target_monster'].squeeze(0)
+                target_mask = torch.from_numpy(masks['target_monster']).bool()
+                target_q[~target_mask] = -float('inf')
+                if self.is_training:
+                    target_probs = torch.softmax(target_q / self.temperature, dim=-1)
+                    target_idx = torch.multinomial(target_probs, 1).item()
+                else:
+                    target_idx = torch.argmax(target_q).item()
+
             # 如果目标掩码全为False，说明该牌无需目标
             if not np.any(masks['target_monster']):
                 target_idx = None
@@ -165,6 +180,50 @@ class DQN:
             return PlayAction(type=ActionType.PLAY, hand_idx=card_idx, target_idx=target_idx)
 
         elif action_type == DecomposedActionType.CHOOSE:
+            # 当遇到商店选项的时候，首先要看需不需要进入商店
+            if game_state.screen_type == ScreenType.SHOP_ROOM:
+                if not self.visited_shop:
+                    self.visited_shop = True
+                    for i, option in enumerate(game_state.choice_list):
+                        if option == 'shop':
+                            return ChooseAction(type=ActionType.CHOOSE, choice_idx=i)
+                else:
+                    self.visited_shop = False
+                    return SingleAction(type=ActionType.PROCEED, decomposed_type=ActionType.PROCEED)
+            # 实际上是不需要看买不买得起的，这里纯粹是因为没有leave的选项导致走不开商店导致的。
+            # 进入商店，弹出商店的Screen后，继续选择选项
+            # if game_state.screen_type == ScreenType.SHOP_SCREEN:
+            #     # 这里需要认定screen_type是SHOP_SCREEN才能继续选择商店选项
+            #     shop_screen:ShopScreen = game_state.screen
+            #     # 把所有物品中的最便宜的价格找出来
+            #     purge_cost = shop_screen.purge_cost
+            #     if purge_cost > game_state.gold:
+            #         # 买不起移除牌，把mask对应的位置设为-inf
+            #         index = self.choose_index_based_name(game_state.choice_list, 'purge')
+            #         masks['choose_option'][index] = false
+            #     for i, card in enumerate(shop_screen.cards):
+            #         card:Card = shop_screen.cards[i]
+            #         if card.cost > game_state.gold:
+            #             # 找到买不起的牌，把mask对应的位置设为-inf
+            #             index = self.choose_index_based_name(game_state.choice_list, card.name)
+            #             masks['choose_option'][index] = false
+            #     for i, relic in enumerate(shop_screen.relics):
+            #         relic:Relic = shop_screen.relics[i]
+            #         if relic.price > game_state.gold:
+            #             # 找到买不起的遗物，把mask对应的位置设为-inf
+            #             index = self.choose_index_based_name(game_state.choice_list, relic.name)
+            #             masks['choose_option'][index] = false
+            #     for i, potion in enumerate(shop_screen.potions):
+            #         potion:Potion = shop_screen.potions[i]
+            #         if potion.price > game_state.gold:
+            #             # 找到买不起的药水，把mask对应的位置设为-inf
+            #             index = self.choose_index_based_name(game_state.choice_list, potion.name)
+            #             masks['choose_option'][index] = false
+            #     # 如果choose_masks全部是false，说明买不起任何东西，只能选择离开
+            #     if not np.any(masks['choose_option']):
+            #         return SingleAction(type=ActionType.CANCEL, decomposed_type=ActionType.CANCEL)
+                
+
             choose_q = arg_q['choose_option'].squeeze(0)
             choose_mask = torch.from_numpy(masks['choose_option']).bool()
             choose_q[~choose_mask] = -float('inf')
@@ -188,7 +247,8 @@ class DQN:
 
             target_idx = None
             # 检查使用该药水是否需要目标
-            if np.any(masks['target_monster']):
+            chosen_potion:Potion = game_state.potions[potion_idx]
+            if chosen_potion.requires_target:
                 target_q = arg_q['target_monster'].squeeze(0)
                 target_mask = torch.from_numpy(masks['target_monster']).bool()
                 target_q[~target_mask] = -float('inf')
@@ -198,9 +258,6 @@ class DQN:
                 else:
                     target_idx = torch.argmax(target_q).item()
             
-            # 修复：PotionUseAction 应该使用一个通用的动作类型，比如 ActionType.USE。
-            # ActionType 枚举中没有 POTION 成员。
-            # 假设 ActionType.USE 存在，并且是用于使用药水、遗物等的通用类型。
             return PotionUseAction(type=ActionType.POTION_USE, potion_idx=potion_idx, target_idx=target_idx)
         
         elif action_type == DecomposedActionType.POTION_DISCARD:
@@ -225,6 +282,12 @@ class DQN:
                 raise ValueError(f"无法将有参数的分解动作 {action_type.name} 转换为 SingleAction")
             return SingleAction(type=base_action_type, decomposed_type=action_type)
 
+    def choose_index_based_name(self, choice_list, name):
+        """根据名称选择对应的索引"""
+        for i, choice in enumerate(choice_list):
+            if choice == name:
+                return i
+        return None
     def get_q_values(self, state, use_policy_net=True):
         """获取所有头的Q值"""
         with torch.no_grad():

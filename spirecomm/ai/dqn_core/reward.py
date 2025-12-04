@@ -25,6 +25,12 @@ class RewardCalculator:
         # --- 资源管理奖励 ---
         # 每浪费1点能量结束回合的惩罚
         self.WASTE_ENERGY_PENALTY = -5.0
+        # 每获得1点金钱的奖励
+        self.GOLD_GAINED_REWARD = 0.1
+        # 每获得一瓶药水的奖励
+        self.POTION_GAINED_REWARD = 5.0
+        # 每失去一瓶药水的惩罚
+        self.POTION_LOST_PENALTY = -5.0
 
         # --- 游戏进程奖励 ---
         # Act 1 (1-17层) 每提升一层的奖励
@@ -120,7 +126,7 @@ class RewardCalculator:
             if damage_dealt > 0:
                 value = damage_dealt * self.DAMAGE_DEALT_MULTIPLIER
                 total_reward += value
-                contributions.append(("damage_dealt", value, f"damage={damage_dealt} * mul={self.DAMAGE_DEALT_MULTIPLIER}"))
+                contributions.append(("造成伤害", value, f"damage={damage_dealt} * mul={self.DAMAGE_DEALT_MULTIPLIER}"))
 
             # 计算怪物死亡（is_gone 或 被移除）
             prev_monsters = getattr(prev_state, "monsters", []) or []
@@ -147,7 +153,7 @@ class RewardCalculator:
             if dead_count > 0:
                 value = dead_count * self.MONSTER_DEATH_REWARD
                 total_reward += value
-                contributions.append(("monster_deaths", value, f"count={dead_count} * per={self.MONSTER_DEATH_REWARD}"))
+                contributions.append(("怪物死亡", value, f"count={dead_count} * per={self.MONSTER_DEATH_REWARD}"))
 
             # 计算自身受到的伤害
             if prev_state.player is not None and next_state.player is not None:
@@ -155,7 +161,7 @@ class RewardCalculator:
                 if damage_taken > 0:
                     value = damage_taken * self.DAMAGE_TAKEN_MULTIPLIER
                     total_reward += value
-                    contributions.append(("damage_taken", value, f"damage={damage_taken} * mul={self.DAMAGE_TAKEN_MULTIPLIER}"))
+                    contributions.append(("受到伤害", value, f"damage={damage_taken} * mul={self.DAMAGE_TAKEN_MULTIPLIER}"))
 
             # 检查是否浪费能量 (当执行 "END" 动作时触发)
             if action is not None and getattr(action, "decomposed_type", None) == DecomposedActionType.END and prev_state.player is not None:
@@ -163,7 +169,7 @@ class RewardCalculator:
                 if wasted_energy > 0:
                     value = wasted_energy * self.WASTE_ENERGY_PENALTY
                     total_reward += value
-                    contributions.append(("wasted_energy", value, f"wasted={wasted_energy} * mul={self.WASTE_ENERGY_PENALTY}"))
+                    contributions.append(("浪费能量", value, f"wasted={wasted_energy} * mul={self.WASTE_ENERGY_PENALTY}"))
 
         # --- 2. 战斗结果奖励 ---
         # 赢得战斗: 从战斗状态进入非战斗状态
@@ -172,30 +178,29 @@ class RewardCalculator:
             if prev_state.floor == 55:
                 value = self.WIN_FINAL_BOSS_REWARD
                 total_reward += value
-                contributions.append(("win_final_boss", value, f"floor={prev_state.floor}"))
+                contributions.append(("赢得最终BOSS", value, f"floor={prev_state.floor}"))
             else:
                 value = self.WIN_BATTLE_REWARD
                 total_reward += value
-                contributions.append(("win_battle", value, f"floor={prev_state.floor}"))
+                contributions.append(("赢得战斗", value, f"floor={prev_state.floor}"))
                 # 检查是否是幕BOSS战胜利
                 if prev_state.floor == 17:
                     bv = self.WIN_ACT1_BOSS_BONUS
                     total_reward += bv
-                    contributions.append(("win_act1_boss_bonus", bv, "floor=17"))
+                    contributions.append(("赢得第一幕BOSS奖励", bv, "floor=17"))
                 elif prev_state.floor == 34:
                     bv = self.WIN_ACT2_BOSS_BONUS
                     total_reward += bv
-                    contributions.append(("win_act2_boss_bonus", bv, "floor=34"))
+                    contributions.append(("赢得第二幕BOSS奖励", bv, "floor=34"))
                 elif prev_state.floor == 51:
                     bv = self.WIN_ACT3_BOSS_BONUS
                     total_reward += bv
-                    contributions.append(("win_act3_boss_bonus", bv, "floor=51"))
-
+                    contributions.append(("赢得第三幕BOSS奖励", bv, "floor=51"))
         # 输掉战斗: 游戏结束
         if prev_state.in_game and not next_state.in_game:
             value = self.LOSE_BATTLE_REWARD
             total_reward += value
-            contributions.append(("lose_game", value, "从 in_game 到 not in_game"))
+            contributions.append(("输掉游戏", value, "从 in_game 到 not in_game"))
 
         # --- 3. 游戏进程奖励 ---
         # 使用 next_state.floor（到达后的楼层）来决定属于哪个 Act 的奖励区间，避免 prev_state.floor 为 0 时误判为 Act4
@@ -213,8 +218,34 @@ class RewardCalculator:
                 per = self.FLOOR_INCREASE_ACT4
             value = floor_change * per
             total_reward += value
-            contributions.append(("floor_increase", value, f"change={floor_change} * per={per} (band_based_on_floor={target_floor_for_band})"))
+            contributions.append(("层数上升", value, f"change={floor_change} * per={per} (band_based_on_floor={target_floor_for_band})"))
 
+        # --- 4. 资源管理奖励 ---
+        # 金钱变化奖励
+        gold_change = next_state.gold - prev_state.gold
+        if gold_change > 0:
+            value = gold_change * self.GOLD_GAINED_REWARD
+            total_reward += value
+            contributions.append(("获得金币", value, f"change={gold_change} * mul={self.GOLD_GAINED_REWARD}"))
+        # 药水变化奖励
+        # 需要判断potions数组中，id不为"Potion Slot" 或者 name 不为 "药水栏"的数量变
+        prev_potion_count = 0
+        for potion in prev_state.potions:
+            if potion.potion_id != "Potion Slot" or potion.name != "药水栏":
+                prev_potion_count += 1
+        next_potion_count = 0
+        for potion in next_state.potions:
+            if potion.potion_id != "Potion Slot" or potion.name != "药水栏":
+                next_potion_count += 1
+        potion_change = next_potion_count - prev_potion_count
+        if potion_change > 0:
+            value = potion_change * self.POTION_GAINED_REWARD
+            total_reward += value
+            contributions.append(("获得药水", value, f"change={potion_change} * mul={self.POTION_GAINED_REWARD}"))
+        elif potion_change < 0:
+            value = potion_change * self.POTION_LOST_PENALTY
+            total_reward += value
+            contributions.append(("失去药水", value, f"change={potion_change} * mul={self.POTION_LOST_PENALTY}"))
         # 输出每一项贡献及总和，便于定位问题
         log_lines = ["奖励明细："]
         for name, val, detail in contributions:

@@ -1,10 +1,7 @@
-from re import S
-import torch
 from dataclasses import dataclass, field
-from spirecomm.ai import absolute_logger
 from spirecomm.ai.constants import MAX_CHOOSE_COUNT, MAX_HAND_SIZE, MAX_MONSTER_COUNT, MAX_POTION_COUNT
 from spirecomm.spire.game import Game
-from spirecomm.ai.dqn_core.action import  BaseAction, PlayAction, ChooseAction, PotionUseAction, SingleAction, ActionType, DecomposedActionType
+from spirecomm.ai.dqn_core.action import  BaseAction, PlayAction, ChooseAction, PotionDiscardAction, PotionUseAction, SingleAction, ActionType, DecomposedActionType
 from typing import List
 import numpy as np
 from spirecomm.ai.absolute_logger import AbsoluteLogger, LogType
@@ -55,6 +52,7 @@ class GameStateProcessor:
         potion_mask = np.zeros(MAX_POTION_COUNT, dtype=bool)
 
         for action in available_actions:
+            # 有对应的 DecomposedActionType 才设置掩码
             if hasattr(action, 'decomposed_type'):
                 action_type_mask[action.decomposed_type.value] = True
 
@@ -68,14 +66,18 @@ class GameStateProcessor:
                 potion_mask[action.potion_idx] = True
                 if action.target_idx is not None:
                     target_monster_mask[action.target_idx] = True
+            elif isinstance(action, PotionDiscardAction):
+                potion_mask[action.potion_idx] = True
+                
+
         self.absolute_logger.write("动作掩码生成完毕。\n")
-        # 每一个mask分别记录下来，且每一行显示10个元素
         self.absolute_logger.write({
             'action_mask':  str(action_type_mask.tolist()),
             'play_mask': str(play_card_mask.tolist()),
             'target_mask': str(target_monster_mask.tolist()),
             'choose_mask': str(choose_option_mask.tolist()),
-            'potion_mask': str(potion_mask.tolist())
+            'potion_mask': str(potion_mask.tolist()),
+            'hand': str([str(card.name) for card in game_state.hand]),
         })
         return {
             'action_type': action_type_mask,
@@ -89,51 +91,53 @@ class GameStateProcessor:
         """从 game_state 解析出所有合法的结构化动作对象列表"""
         actions = []
         
-        if game.choice_available:
-            # 遍历所有选项，但永远排除 "cancel"
-            for i, choice_str in enumerate(game.choice_list):
-                if choice_str != "cancel":
-                    actions.append(ChooseAction(type=ActionType.CHOOSE, choice_idx=i, decomposed_type=DecomposedActionType.CHOOSE))
+        # choose 动作
+        if game.choice_available and "choose" in game.available_commands:
+            for i, _ in enumerate(game.choice_list):
+                actions.append(ChooseAction(type=ActionType.CHOOSE, choice_idx=i, decomposed_type=DecomposedActionType.CHOOSE))
 
         # 战斗中的动作
         if game.in_combat:
-            # Play a card
-            for hand_idx, card in enumerate(game.hand):
-                if card.is_playable:
-                    if card.has_target:
-                        # 怪物列表直接在 game 对象下
-                        for monster_idx, monster in enumerate(game.monsters):
-                            if not monster.is_gone:
-                                # 卡牌索引是它在手牌中的位置
-                                actions.append(PlayAction(type=ActionType.PLAY, hand_idx=hand_idx, target_idx=monster_idx, decomposed_type=DecomposedActionType.PLAY))
-                    else:
-                        actions.append(PlayAction(type=ActionType.PLAY, hand_idx=hand_idx, target_idx=None, decomposed_type=DecomposedActionType.PLAY))
-            # Use a potion
-            for potion_idx, potion in enumerate(game.potions):
-                if potion.can_use:
-                    if potion.requires_target:
-                        for monster_idx, monster in enumerate(game.monsters):
-                            if not monster.is_gone:
-                                # 药水索引是它在药水栏中的位置
-                                actions.append(PotionUseAction(type=ActionType.POTION_USE, potion_idx=potion_idx, target_idx=monster_idx, decomposed_type=DecomposedActionType.POTION))
-                    else:
-                        actions.append(PotionUseAction(type=ActionType.POTION_USE, potion_idx=potion_idx, target_idx=None, decomposed_type=DecomposedActionType.POTION))
+            if "play" in game.available_commands:
+                # Play a card
+                for hand_idx, card in enumerate(game.hand):
+                    if card.is_playable:
+                        if card.has_target:
+                            # 怪物列表直接在 game 对象下
+                            for monster_idx, monster in enumerate(game.monsters):
+                                if not monster.is_gone:
+                                    # 卡牌索引是它在手牌中的位置
+                                    actions.append(PlayAction(type=ActionType.PLAY, hand_idx=hand_idx, target_idx=monster_idx, decomposed_type=DecomposedActionType.PLAY))
+                        else:
+                            actions.append(PlayAction(type=ActionType.PLAY, hand_idx=hand_idx, target_idx=None, decomposed_type=DecomposedActionType.PLAY))
+            
             # End turn
-            actions.append(SingleAction(type=ActionType.END, decomposed_type=DecomposedActionType.END))
+            if "end" in game.available_commands:
+                actions.append(SingleAction(type=ActionType.END, decomposed_type=DecomposedActionType.END))
 
+        if "potion" in game.available_commands:
+                for potion_idx, potion in enumerate(game.potions):
+                    if potion.can_use:
+                        if potion.requires_target:
+                            for monster_idx, monster in enumerate(game.monsters):
+                                if not monster.is_gone:
+                                    # 药水索引是它在药水栏中的位置
+                                    actions.append(PotionUseAction(type=ActionType.POTION_USE, potion_idx=potion_idx, target_idx=monster_idx, decomposed_type=DecomposedActionType.POTION_USE))
+                        else:
+                            actions.append(PotionUseAction(type=ActionType.POTION_USE, potion_idx=potion_idx, target_idx=None, decomposed_type=DecomposedActionType.POTION_USE))
+                    if potion.can_discard:
+                        actions.append(PotionDiscardAction(type=ActionType.POTION_DISCARD, potion_idx=potion_idx, decomposed_type=DecomposedActionType.POTION_DISCARD))
         # 非战斗中的通用动作
         # 正确的判断方式是检查 available_commands
+        if "confirm" in game.available_commands:
+            actions.append(SingleAction(type=ActionType.CONFIRM, decomposed_type=DecomposedActionType.CONFIRM))
+        if "return" in game.available_commands:
+            actions.append(SingleAction(type=ActionType.RETURN, decomposed_type=DecomposedActionType.RETURN))
         if "proceed" in game.available_commands:
             actions.append(SingleAction(type=ActionType.PROCEED, decomposed_type=DecomposedActionType.PROCEED))
         if "skip" in game.available_commands:
             actions.append(SingleAction(type=ActionType.SKIP, decomposed_type=DecomposedActionType.SKIP))
+        if "leave" in game.available_commands:
+            actions.append(SingleAction(type=ActionType.LEAVE, decomposed_type=DecomposedActionType.LEAVE))
         
         return actions
-
-    def get_start_game_action(self, game: Game) -> str:
-        """获取开始游戏的动作"""
-        if "start" in game.available_commands:
-            # 角色信息在 game.character 中
-            return "start " + game.character.name.lower()
-        else:
-            return "proceed"

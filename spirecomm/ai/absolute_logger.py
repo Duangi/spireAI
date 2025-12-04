@@ -90,13 +90,3 @@ class AbsoluteLogger:
     def __del__(self):
         """析构函数，确保在对象销毁时文件能被正确关闭。"""
         self.close()
-
-# 测试
-if __name__ == "__main__":
-    # 创建一个AbsoluteLogger对象，并指定日志文件的路径
-    logger = AbsoluteLogger("/Users/duang/Projects/spireAI/log/")
-    logger.start_episode()
-    # 使用with语句打开日志文件，并写入内容
-    # with logger:
-    #     logger.write("This is a test log entry.\n")
-    #     logger.write("Another log entry.\n")

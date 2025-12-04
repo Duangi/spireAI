@@ -13,16 +13,21 @@ class DecomposedActionType(Enum):
     POTION_DISCARD = 3
     END = 4
     PROCEED = 5
-    CANCEL = 6
-    SKIP = 7
+    CONFIRM = 6
+    RETURN = 7
+    SKIP = 8
+    LEAVE = 9
+
 
     def to_action_type(self):
         """将分解式动作类型转换为基础动作类型"""
         mapping = {
             DecomposedActionType.END: ActionType.END, # type: ignore
             DecomposedActionType.PROCEED: ActionType.PROCEED, # type: ignore
-            DecomposedActionType.CANCEL: ActionType.CANCEL, # type: ignore
+            DecomposedActionType.RETURN: ActionType.RETURN, # type: ignore
             DecomposedActionType.SKIP: ActionType.SKIP, # type: ignore
+            DecomposedActionType.CONFIRM: ActionType.CONFIRM, # type: ignore
+            DecomposedActionType.LEAVE: ActionType.LEAVE, # type: ignore
             # 注意：PLAY, CHOOSE, POTION_USE, POTION_DISCARD 是有参数的，不应在这里转换
         }
         return mapping.get(self)

@@ -35,7 +35,19 @@ class PlayerClass(Enum):
     IRONCLAD = 1
     THE_SILENT = 2
     DEFECT = 3
-    THE_WATCHER = 4
+    WATCHER = 4
+
+    def get_chinese_name(self):
+        if self == PlayerClass.IRONCLAD:
+            return "铁血战士"
+        elif self == PlayerClass.THE_SILENT:
+            return "静默猎手"
+        elif self == PlayerClass.DEFECT:
+            return "故障机器人"
+        elif self == PlayerClass.WATCHER:
+            return "观者"
+        else:
+            return "未知职业"
 
 
 class OrbType(Enum):
