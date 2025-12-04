@@ -7,6 +7,7 @@ from spirecomm.spire.character import PlayerClass
 from spirecomm.spire.game import Game
 from spirecomm.ai.tests.test_case.game_state_test_cases import test_cases
 from spirecomm.ai.dqn_core.action import DecomposedActionType
+import torch
 
 
 class DQNAgent:
@@ -25,6 +26,8 @@ class DQNAgent:
         state_size = 10358 
         self.dqn_algorithm = DQN(state_size, self.state_processor)
 
+        
+
         if self.play_mode:
             self.dqn_algorithm.set_inference_mode()
             self.dqn_algorithm.policy_net.eval() # 游玩模式下，使用评估模式
@@ -38,6 +41,12 @@ class DQNAgent:
         self.previous_action = None
         self.previous_state_tensor = None
 
+        # 如果提供了预训练模型路径，尝试加载
+        if model_path:
+            try:
+                self.load_model(model_path)
+            except Exception as e:
+                raise RuntimeError(f"无法加载模型: {e}")
     def get_next_action_in_game(self, game_state:Game):
         """
         这是由Coordinator在游戏状态改变时调用的核心回调函数。
@@ -101,3 +110,13 @@ class DQNAgent:
         这是提供给 train.py 在每局结束后调用的接口。
         """
         self.dqn_algorithm.train(batch_size)
+
+    def load_model(self, model_path: str, map_location=None):
+        """
+        加载 model_path 中的 state_dict 到 policy_net（并尝试同步到 target_net）。
+        不会改变 play_mode 的值
+        """
+        state_dict = torch.load(model_path, map_location=map_location)
+        self.dqn_algorithm.policy_net.load_state_dict(state_dict)
+        # 尝试同步到 target_net
+        self.dqn_algorithm.update_target_net()

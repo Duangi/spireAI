@@ -31,6 +31,8 @@ class RewardCalculator:
         self.POTION_GAINED_REWARD = 5.0
         # 每失去一瓶药水的惩罚
         self.POTION_LOST_PENALTY = -5.0
+        # 避免模型卡bug一直不动的微小惩罚
+        self.STEP_PUNISH = -0.01
 
         # --- 游戏进程奖励 ---
         # Act 1 (1-17层) 每提升一层的奖励
@@ -246,6 +248,12 @@ class RewardCalculator:
             value = potion_change * self.POTION_LOST_PENALTY
             total_reward += value
             contributions.append(("失去药水", value, f"change={potion_change} * mul={self.POTION_LOST_PENALTY}"))
+
+        # --- 5. 每步微小惩罚，防止卡bug不动 ---
+        value = self.STEP_PUNISH
+        total_reward += value
+        contributions.append(("每走一步的惩罚", value, f"固定值={self.STEP_PUNISH}"))
+        
         # 输出每一项贡献及总和，便于定位问题
         log_lines = ["奖励明细："]
         for name, val, detail in contributions:

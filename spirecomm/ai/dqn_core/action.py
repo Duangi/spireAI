@@ -115,6 +115,9 @@ class PotionUseAction(BaseAction):
 
 @dataclass(frozen=True)
 class SingleAction(BaseAction):
+    # SingleAction 代表那些不带额外参数的动作（如 return/end/...）
+    # 在构造时需要显式传入对应的 decomposed_type，例如:
+    # SingleAction(type=ActionType.RETURN, decomposed_type=DecomposedActionType.RETURN)
     decomposed_type: DecomposedActionType
     def to_string(self) -> str:
         # 单一动作直接返回枚举值（如"return"、"end"，与你的原逻辑一致）

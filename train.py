@@ -7,10 +7,15 @@ import sys
 from spirecomm.communication.coordinator import Coordinator
 from spirecomm.spire.character import PlayerClass
 from spirecomm.ai.dqn import DQNAgent
+import os
+import time
+from datetime import datetime
 
 
 if __name__ == "__main__":
     # --- 1. 初始化 ---
+    # dqn_agent = DQNAgent("D:/Projects/spireAI/models/dqn_model_episode_8.pth")
+    # dqn_agent = DQNAgent(model_path=r'D:/Projects/spireAI/models/dqn_model_latest.pth')
     dqn_agent = DQNAgent()
     coordinator = Coordinator()
     coordinator.signal_ready()
@@ -48,4 +53,23 @@ if __name__ == "__main__":
 
         # 每隔N局游戏，保存模型权重
         if episode % SAVE_MODEL_FREQUENCY == 0:
-            torch.save(dqn_agent.dqn_algorithm.policy_net.state_dict(), f"dqn_model_episode_{episode}.pth")
+            # 明确保存到项目下的 models 目录，便于查找
+            models_dir = r'D:/Projects/spireAI/models'
+            try:
+                os.makedirs(models_dir, exist_ok=True)
+                save_path = os.path.join(models_dir, f"dqn_model_episode_{episode}.pth")
+                torch.save(dqn_agent.dqn_algorithm.policy_net.state_dict(), save_path)
+                # 记录一次保存事件到日志，帮助排查
+                with open(os.path.join(models_dir, "save_model.log"), "a", encoding="utf-8") as lf:
+                    lf.write(f"{datetime.now().isoformat()} Saved model for episode {episode} -> {save_path}\n")
+                # 存一个最新的模型副本，方便快速加载
+                latest_path = os.path.join(models_dir, "dqn_model_latest.pth")
+                torch.save(dqn_agent.dqn_algorithm.policy_net.state_dict(), latest_path)
+            except Exception as e:
+                # 如果写入失败，把异常记录下来但不抛出，避免影响训练循环
+                err_msg = f"{datetime.now().isoformat()} Failed to save model for episode {episode}: {e}\n"
+                try:
+                    with open(os.path.join(models_dir, "save_model.log"), "a", encoding="utf-8") as lf:
+                        lf.write(err_msg)
+                except Exception:
+                    pass

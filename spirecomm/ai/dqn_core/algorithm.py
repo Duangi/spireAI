@@ -69,7 +69,9 @@ class DQN:
         for i, action in enumerate(actions):
             # 动作类型的Q值
             decomposed_type = action.decomposed_type
-            q_val = pred_action_q[i, action.decomposed_type.value]
+            # 使用安全索引，避免 action.decomposed_type.value 为字符串导致 TypeError
+            action_idx = self._action_index_from_decomposed(action)
+            q_val = pred_action_q[i, action_idx]
             # 如果动作有参数，加上参数的Q值
             if isinstance(action, PlayAction):
                 q_val += pred_arg_q['play_card'][i, action.hand_idx]
@@ -133,9 +135,9 @@ class DQN:
         # 应用掩码，将非法动作的Q值设为负无穷
         action_type_q[~action_type_mask] = -float('inf')
         
-        # 如果所有动作类型都被屏蔽了，直接返回None
+        # 如果所有动作类型都被屏蔽了
         if not action_type_mask.any():
-            return None
+            raise ValueError("所有动作类型均被屏蔽，无法选择动作。")
 
         if self.is_training:
             # 训练模式：Boltzmann 探索
@@ -342,3 +344,35 @@ class DQN:
     def update_target_net(self):
         """定期将策略网络的权重复制到目标网络"""
         self.target_net.load_state_dict(self.policy_net.state_dict())
+
+    # 新增：把 action.decomposed_type 安全地转换为整数索引
+    def _action_index_from_decomposed(self, action):
+        """
+        返回可用于索引 pred_action_q 的整数索引。
+        兼容场景：
+          - action.decomposed_type.value 是 int
+          - action.decomposed_type.value 是可以转为 int 的字符串
+          - action.decomposed_type 是 Enum/IntEnum（通过成员的 value 或顺序）
+          - 如果实例上定义了 ACTION_INDEX_MAP / action_index_map 字典，则使用该映射（支持 key 为 name 或 value）
+        """
+        # 尝试取 value
+        dt = getattr(action, "decomposed_type", None)
+        val = getattr(dt, "value", None)
+
+        # 直接是整数
+        if isinstance(val, int):
+            return int(val)
+        # value 为可转 int 的字符串
+        if isinstance(val, str):
+            try:
+                return int(val)
+            except Exception:
+                pass
+        # 如果 decomposed_type 本身是 int 或可转为 int
+        if isinstance(dt, int):
+            return int(dt)
+        if isinstance(dt, str):
+            try:
+                return int(dt)
+            except Exception:
+                pass

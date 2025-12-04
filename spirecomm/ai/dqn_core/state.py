@@ -97,23 +97,22 @@ class GameStateProcessor:
                 actions.append(ChooseAction(type=ActionType.CHOOSE, choice_idx=i, decomposed_type=DecomposedActionType.CHOOSE))
 
         # 战斗中的动作
-        if game.in_combat:
-            if "play" in game.available_commands:
-                # Play a card
-                for hand_idx, card in enumerate(game.hand):
-                    if card.is_playable:
-                        if card.has_target:
-                            # 怪物列表直接在 game 对象下
-                            for monster_idx, monster in enumerate(game.monsters):
-                                if not monster.is_gone:
-                                    # 卡牌索引是它在手牌中的位置
-                                    actions.append(PlayAction(type=ActionType.PLAY, hand_idx=hand_idx, target_idx=monster_idx, decomposed_type=DecomposedActionType.PLAY))
-                        else:
-                            actions.append(PlayAction(type=ActionType.PLAY, hand_idx=hand_idx, target_idx=None, decomposed_type=DecomposedActionType.PLAY))
-            
-            # End turn
-            if "end" in game.available_commands:
-                actions.append(SingleAction(type=ActionType.END, decomposed_type=DecomposedActionType.END))
+        if "play" in game.available_commands:
+            # Play a card
+            for hand_idx, card in enumerate(game.hand):
+                if card.is_playable:
+                    if card.has_target:
+                        # 怪物列表直接在 game 对象下
+                        for monster_idx, monster in enumerate(game.monsters):
+                            if not monster.is_gone:
+                                # 卡牌索引是它在手牌中的位置
+                                actions.append(PlayAction(type=ActionType.PLAY, hand_idx=hand_idx, target_idx=monster_idx, decomposed_type=DecomposedActionType.PLAY))
+                    else:
+                        actions.append(PlayAction(type=ActionType.PLAY, hand_idx=hand_idx, target_idx=None, decomposed_type=DecomposedActionType.PLAY))
+        
+        # End turn
+        if "end" in game.available_commands:
+            actions.append(SingleAction(type=ActionType.END, decomposed_type=DecomposedActionType.END))
 
         if "potion" in game.available_commands:
                 for potion_idx, potion in enumerate(game.potions):
