@@ -286,6 +286,11 @@ class Game:
 
         return game
 
+    def are_potions_full(self):
+        for potion in self.potions:
+            if potion.potion_id == "Potion Slot":
+                return False
+        return True
     def __eq__(self, other):
         """严格比较：如果两个 Game 的量化向量字节完全相同则视为相等（高效）。"""
         if self == None or other == None:
