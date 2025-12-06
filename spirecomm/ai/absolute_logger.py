@@ -20,7 +20,9 @@ class AbsoluteLogger:
     """
     一个简单的日志记录器，用于将字符串内容写入指定路径的文件。
     """
-    def __init__(self, log_type:LogType = LogType.PROGRESS):
+    def __init__(self, log_type:LogType = LogType.PROGRESS, max_file_num = 10):
+        self.max_file_num = max_file_num
+        self.step_count = 0
         # 如果是windows系统，换一个绝对路径D:\Projects\spireAI
         if log_type == LogType.PROGRESS:
             if os.name == 'nt':
@@ -97,6 +99,21 @@ class AbsoluteLogger:
         else:
             print(f"Warning: Log file not open. Cannot write to {self.log_file_path}", file=sys.stderr)
 
+        # 写完之后，查看是否超出最大文件数，若超出则删除最旧的文件
+        log_dir = os.path.dirname(self.log_file_path)
+        self.step_count += 1
+        if self.step_count % 10 == 0:  # 每10次写入检查一次，减少文件系统操作
+            try:
+                all_files = [f for f in os.listdir(log_dir) if os.path.isfile(os.path.join(log_dir, f))]
+                if len(all_files) > self.max_file_num:
+                    # 按修改时间排序，删除最旧的文件
+                    all_files.sort(key=lambda f: os.path.getmtime(os.path.join(log_dir, f)))
+                    files_to_delete = all_files[:len(all_files) - self.max_file_num]
+                    for f in files_to_delete:
+                        os.remove(os.path.join(log_dir, f))
+            except Exception:
+                # 如果删除文件失败，不阻塞正常写入
+                pass
     def close(self):
         """关闭日志文件。"""
         if self.file_handle and not self.file_handle.closed:
