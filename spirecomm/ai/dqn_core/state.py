@@ -54,9 +54,9 @@ class GameStateProcessor:
         for action in available_actions:
             # 有对应的 DecomposedActionType 才设置掩码
             if hasattr(action, 'decomposed_type'):
-                # 这里是return可能出现的地方，现在出现了一种bug，在商店门口反复return不往前进
-                # TODO 在这里加一个判断让它选不了return。在这之前让我试一试干脆没有return会怎么样
-                action_type_mask[action.decomposed_type.value] = True
+                decomposed_type:DecomposedActionType = action.decomposed_type
+                type_val = int(decomposed_type.value)
+                action_type_mask[type_val] = True
 
             if isinstance(action, PlayAction):
                 play_card_mask[action.hand_idx] = True

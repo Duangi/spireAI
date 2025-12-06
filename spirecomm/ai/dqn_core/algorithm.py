@@ -286,7 +286,7 @@ class DQN:
             # 判断药水是否满了
             # 如果状态里面的choice_list有potion字段的话，把对应的index选出来，mask置为false，满了选不了药水
             potion_idx = self.choose_index_based_name(game_state.choice_list, 'potion')
-            if potion_idx is not None and len(game_state.potions) >= MAX_POTION_COUNT:
+            if potion_idx is not None and len(game_state.potions) >= len(game_state.potions):
                 masks['choose_option'][potion_idx] = 0  # 不能选药水了
             choose_q = arg_q['choose_option'].squeeze(0)
             choose_mask = torch.from_numpy(masks['choose_option']).bool()
