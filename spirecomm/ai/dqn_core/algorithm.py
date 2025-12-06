@@ -317,8 +317,9 @@ class DQN:
 
         elif action_type == DecomposedActionType.POTION_USE:
             # 需要选择使用哪个药水，以及可能的目标
-            potion_q = arg_q['potion'].squeeze(0)
-            potion_mask = torch.from_numpy(masks['potion']).bool()
+            # 使用专门的 potion_use 头与掩码；向后兼容仍可接受旧的 'potion'
+            potion_q = arg_q.get('potion_use').squeeze(0)
+            potion_mask = torch.from_numpy(masks.get('potion_use')).bool()
             potion_q[~potion_mask] = -float('inf')
             if self.is_training:
                 potion_probs = torch.softmax(potion_q / self.temperature, dim=-1)
@@ -344,7 +345,7 @@ class DQN:
         elif action_type == DecomposedActionType.POTION_DISCARD:
             # 需要选择丢弃哪个药水
             potion_q = arg_q['potion_discard'].squeeze(0)
-            potion_mask = torch.from_numpy(masks.get('potion_discard', masks.get('potion'))).bool()
+            potion_mask = torch.from_numpy(masks.get('potion_discard')).bool()
             potion_q[~potion_mask] = -float('inf')
             if self.is_training:
                 potion_probs = torch.softmax(potion_q / self.temperature, dim=-1)
