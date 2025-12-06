@@ -3,6 +3,26 @@ from enum import Enum
 from dataclasses import dataclass  # 简化Class定义，自动生成__init__等方法
 from spirecomm.ai.constants import MAX_DECK_SIZE, MAX_HAND_SIZE, MAX_MONSTER_COUNT, MAX_POTION_COUNT
 from typing import Union
+import numbers
+import torch
+
+def _to_int_or_none(v):
+    if v is None:
+        return None
+    # torch scalar/tensor
+    if isinstance(v, torch.Tensor):
+        try:
+            return int(v.item())
+        except Exception:
+            pass
+    # numpy / python numeric
+    if isinstance(v, numbers.Number):
+        return int(v)
+    # try general conversion
+    try:
+        return int(v)
+    except Exception:
+        raise TypeError(f"无法将索引转换为 int: {v} (type={type(v)})")
 
 
 class DecomposedActionType(Enum):
@@ -61,6 +81,9 @@ class ChooseAction(BaseAction):
     choice_idx: int  # 0-based
     decomposed_type: DecomposedActionType = DecomposedActionType.CHOOSE
     def __post_init__(self):
+        # 规范化索引类型，支持 numpy/torch 标量
+        choice_idx = _to_int_or_none(self.choice_idx)
+        object.__setattr__(self, "choice_idx", choice_idx)
         if not (0 <= self.choice_idx < MAX_DECK_SIZE):
             raise ValueError(f"Choose索引{self.choice_idx}超出范围（0~{MAX_DECK_SIZE-1}）")
     def to_string(self) -> str:
@@ -73,6 +96,11 @@ class PlayAction(BaseAction):
     target_idx: Union[int, None]  # None=无目标
     decomposed_type: DecomposedActionType = DecomposedActionType.PLAY
     def __post_init__(self):
+        # 规范化索引类型
+        hand_idx = _to_int_or_none(self.hand_idx)
+        target_idx = _to_int_or_none(self.target_idx)
+        object.__setattr__(self, "hand_idx", hand_idx)
+        object.__setattr__(self, "target_idx", target_idx)
         if not (0 <= self.hand_idx < MAX_HAND_SIZE):
             raise ValueError(f"Play手牌索引{self.hand_idx}超出范围（0~{MAX_HAND_SIZE-1}）")
         if self.target_idx is not None and not (0 <= self.target_idx < MAX_MONSTER_COUNT):
@@ -90,6 +118,8 @@ class PotionDiscardAction(BaseAction):
     potion_idx: int  # 0-based
     decomposed_type: DecomposedActionType = DecomposedActionType.POTION_DISCARD
     def __post_init__(self):
+        potion_idx = _to_int_or_none(self.potion_idx)
+        object.__setattr__(self, "potion_idx", potion_idx)
         if not (0 <= self.potion_idx < MAX_POTION_COUNT): # type: ignore
             raise ValueError(f"Potion丢弃索引{self.potion_idx}超出范围（0~{MAX_POTION_COUNT-1}）")
     def to_string(self) -> str:
@@ -102,6 +132,10 @@ class PotionUseAction(BaseAction):
     target_idx: Union[int, None]  # None=无目标
     decomposed_type: DecomposedActionType = DecomposedActionType.POTION_USE
     def __post_init__(self):
+        potion_idx = _to_int_or_none(self.potion_idx)
+        target_idx = _to_int_or_none(self.target_idx)
+        object.__setattr__(self, "potion_idx", potion_idx)
+        object.__setattr__(self, "target_idx", target_idx)
         if not (0 <= self.potion_idx < MAX_POTION_COUNT): # type: ignore
             raise ValueError(f"Potion使用索引{self.potion_idx}超出范围（0~{MAX_POTION_COUNT-1}）")
         if self.target_idx is not None and not (0 <= self.target_idx < MAX_MONSTER_COUNT): # type: ignore

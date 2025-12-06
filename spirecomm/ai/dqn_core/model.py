@@ -48,6 +48,8 @@ class DQNModel(nn.Module): # 这实际上是一个 Dueling Branching Q-Network
         choose_option_q = adv_choose_option
         potion_q = adv_potion
 
+        # 输出类型:action_type_q: [batch_size, NUM_ACTION_TYPES]
+        # 其他参数头: [batch_size, param_size]
         return action_type_q, {
             'play_card': play_card_q, 'target_monster': target_monster_q, 
             'choose_option': choose_option_q, 'potion': potion_q

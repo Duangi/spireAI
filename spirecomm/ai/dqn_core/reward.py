@@ -19,42 +19,46 @@ class RewardCalculator:
         self.MONSTER_DEATH_REWARD = 10.0
         # 赢得一场普通战斗的奖励
         self.WIN_BATTLE_REWARD = 30.0
-        # 输掉一场战斗的惩罚
-        self.LOSE_BATTLE_REWARD = -1000.0
+        # 输掉一场战斗的惩罚 -1000还是太高了，哥们直接不打了 原地摆烂
+        self.LOSE_BATTLE_REWARD = -10.0
 
         # --- 资源管理奖励 ---
         # 每浪费1点能量结束回合的惩罚
         self.WASTE_ENERGY_PENALTY = -5.0
-        # 每获得1点金钱的奖励
-        self.GOLD_GAINED_REWARD = 0.1
+        # 每获得1点金钱的奖励  0.1的时候战斗结束的钱都不捡了
+        self.GOLD_GAINED_REWARD = 2
         # 每获得一瓶药水的奖励
         self.POTION_GAINED_REWARD = 5.0
         # 每失去一瓶药水的惩罚
         self.POTION_LOST_PENALTY = -5.0
         # 避免模型卡bug一直不动的微小惩罚
-        self.STEP_PUNISH = -0.01
+        self.STEP_PUNISH = -0.5
 
         # --- 游戏进程奖励 ---
         # Act 1 (1-17层) 每提升一层的奖励
-        self.FLOOR_INCREASE_ACT1 = 30.0
+        self.FLOOR_INCREASE_ACT1 = 100.0
         # Act 2 (18-34层) 每提升一层的奖励
-        self.FLOOR_INCREASE_ACT2 = 60.0
+        self.FLOOR_INCREASE_ACT2 = 200.0
         # Act 3 (35-51层) 每提升一层的奖励
-        self.FLOOR_INCREASE_ACT3 = 120.0
+        self.FLOOR_INCREASE_ACT3 = 300.0
         # Act 4 (52-55层) 每提升一层的奖励
-        self.FLOOR_INCREASE_ACT4 = 240.0
+        self.FLOOR_INCREASE_ACT4 = 400.0
 
         # --- BOSS战特殊奖励 ---
         # 战胜第一幕BOSS (17层) 的额外奖励
-        self.WIN_ACT1_BOSS_BONUS = 120.0
+        self.WIN_ACT1_BOSS_BONUS = 1000.0
         # 战胜第二幕BOSS (34层) 的额外奖励
-        self.WIN_ACT2_BOSS_BONUS = 240.0
+        self.WIN_ACT2_BOSS_BONUS = 3000.0
         # 战胜第三幕BOSS (51层) 的额外奖励
-        self.WIN_ACT3_BOSS_BONUS = 480.0
+        self.WIN_ACT3_BOSS_BONUS = 6000.0
         # 战胜最终BOSS (55层心脏) 的巨大奖励
         self.WIN_FINAL_BOSS_REWARD = 10000.0
 
-        
+        # --- 卡bug专用奖惩 ---
+        # 战斗时应该果断play/end,而不是反复choose动作
+        self.CHOOSE_PENALTY_IN_COMBAT = -2.0
+        # 战斗中选择了CONFIRM时给予奖励
+        self.CONFIRM_REWARD_IN_COMBAT = 2.0
 
         self.absolute_logger = AbsoluteLogger(LogType.REWARD)
         self.absolute_logger.start_episode()
@@ -245,7 +249,7 @@ class RewardCalculator:
             total_reward += value
             contributions.append(("获得药水", value, f"change={potion_change} * mul={self.POTION_GAINED_REWARD}"))
         elif potion_change < 0:
-            value = potion_change * self.POTION_LOST_PENALTY
+            value = abs(potion_change) * self.POTION_LOST_PENALTY
             total_reward += value
             contributions.append(("失去药水", value, f"change={potion_change} * mul={self.POTION_LOST_PENALTY}"))
 
@@ -253,7 +257,19 @@ class RewardCalculator:
         value = self.STEP_PUNISH
         total_reward += value
         contributions.append(("每走一步的惩罚", value, f"固定值={self.STEP_PUNISH}"))
-        
+
+        # --- 6. 战斗中选择动作的奖惩 ---
+        if prev_state.in_combat and next_state.in_combat and action is not None:
+            # 前后都是choose动作，给予惩罚
+            if action.decomposed_type == DecomposedActionType.CHOOSE:
+                value = self.CHOOSE_PENALTY_IN_COMBAT
+                total_reward += value
+                contributions.append(("战斗中选择动作惩罚", value, f"固定值={self.CHOOSE_PENALTY_IN_COMBAT}"))
+            # 战斗中选择了confirm动作，给予奖励
+            elif action.decomposed_type == DecomposedActionType.CONFIRM:
+                value = self.CONFIRM_REWARD_IN_COMBAT
+                total_reward += value
+                contributions.append(("战斗中确认动作奖励", value, f"固定值={self.CONFIRM_REWARD_IN_COMBAT}"))
         # 输出每一项贡献及总和，便于定位问题
         log_lines = ["奖励明细："]
         for name, val, detail in contributions:

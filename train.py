@@ -14,10 +14,11 @@ from datetime import datetime
 
 if __name__ == "__main__":
     # --- 1. 初始化 ---
-    # dqn_agent = DQNAgent("D:/Projects/spireAI/models/dqn_model_episode_8.pth")
+    # dqn_agent = DQNAgent("D:/Projects/spireAI/models/dqn_model_episode_140.pth")
     # dqn_agent = DQNAgent(model_path=r'D:/Projects/spireAI/models/dqn_model_latest.pth')
     dqn_agent = DQNAgent()
     coordinator = Coordinator()
+    
     coordinator.signal_ready()
     
     # 注册回调函数，将协调器的事件与我们的Agent方法连接起来
@@ -39,7 +40,7 @@ if __name__ == "__main__":
     for episode in range(1, NUM_EPISODES + 1):
         chosen_class = next(player_class_cycle)
         dqn_agent.change_class(chosen_class)
-        result = coordinator.play_one_game(chosen_class)
+        result = coordinator.play_one_game(chosen_class, ascension_level=20)
 
         # --- 训练网络 ---
         # 在一局游戏结束后，进行多次训练

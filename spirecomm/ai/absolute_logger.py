@@ -13,6 +13,7 @@ class LogType(Enum):
     PROGRESS = 1
     REWARD = 2
     STATE = 3
+    QVALUE = 4
 
 class AbsoluteLogger:
     """
@@ -35,6 +36,11 @@ class AbsoluteLogger:
                 log_file_path = "D:/Projects/spireAI/state_log/"
             else:
                 log_file_path = "/Users/duang/Projects/spireAI/state_log/"
+        elif log_type == LogType.QVALUE:
+            if os.name == 'nt':
+                log_file_path = "D:/Projects/spireAI/qvalue_log/"
+            else:
+                log_file_path = "/Users/duang/Projects/spireAI/qvalue_log/"
         else:
             raise ValueError(f"未知的日志类型: {log_type}")
 

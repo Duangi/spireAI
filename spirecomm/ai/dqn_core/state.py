@@ -54,6 +54,8 @@ class GameStateProcessor:
         for action in available_actions:
             # 有对应的 DecomposedActionType 才设置掩码
             if hasattr(action, 'decomposed_type'):
+                # 这里是return可能出现的地方，现在出现了一种bug，在商店门口反复return不往前进
+                # TODO 在这里加一个判断让它选不了return。在这之前让我试一试干脆没有return会怎么样
                 action_type_mask[action.decomposed_type.value] = True
 
             if isinstance(action, PlayAction):
@@ -130,8 +132,8 @@ class GameStateProcessor:
         # 正确的判断方式是检查 available_commands
         if "confirm" in game.available_commands:
             actions.append(SingleAction(type=ActionType.CONFIRM, decomposed_type=DecomposedActionType.CONFIRM))
-        if "return" in game.available_commands:
-            actions.append(SingleAction(type=ActionType.RETURN, decomposed_type=DecomposedActionType.RETURN))
+        # if "return" in game.available_commands:
+        #     actions.append(SingleAction(type=ActionType.RETURN, decomposed_type=DecomposedActionType.RETURN))
         if "proceed" in game.available_commands:
             actions.append(SingleAction(type=ActionType.PROCEED, decomposed_type=DecomposedActionType.PROCEED))
         if "skip" in game.available_commands:

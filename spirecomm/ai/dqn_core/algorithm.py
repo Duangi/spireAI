@@ -7,7 +7,11 @@ from sympy import false
 import torch
 import torch.optim as optim
 import torch.nn as nn
+from spirecomm.ai.constants import MAX_HAND_SIZE, MAX_MONSTER_COUNT, MAX_DECK_SIZE, MAX_POTION_COUNT
+import os
+import datetime
 
+from spirecomm.ai.absolute_logger import AbsoluteLogger, LogType
 from spirecomm.ai.dqn_core.action import BaseAction, DecomposedActionType, PlayAction, ChooseAction, PotionDiscardAction, PotionUseAction, SingleAction, ActionType
 from spirecomm.ai.dqn_core.model import DQNModel
 from spirecomm.ai.dqn_core.state import GameStateProcessor
@@ -18,7 +22,7 @@ from spirecomm.spire.relic import Relic
 from spirecomm.spire.screen import ScreenType, ShopScreen
 
 class DQN:
-    def __init__(self, state_size, state_processor):
+    def __init__(self, state_size, state_processor:GameStateProcessor):
         self.state_size = state_size
         self.memory = deque(maxlen=2000) # 经验回放池，使用固定大小的双端队列
         self.gamma = 0.95    # 折扣因子
@@ -42,6 +46,9 @@ class DQN:
         
         self.optimizer = optim.Adam(self.policy_net.parameters())
         self.loss_fn = nn.MSELoss()
+
+        self.qvalue_logger = AbsoluteLogger(log_type=LogType.QVALUE)
+        self.qvalue_logger.start_episode()
         
     def remember(self, state, action, reward, next_state, done):
         state_numpy = state.detach().cpu().numpy()
@@ -49,8 +56,10 @@ class DQN:
         self.memory.append((state_numpy, action, reward, next_state_numpy, done))
 
     def train(self, batch_size=32):
+        # 如果经验池中的样本不足一个批次，则不进行训练
         if len(self.memory) < batch_size:
             return
+        # 从经验回放池中随机采样一个批次
         minibatch = random.sample(self.memory, batch_size)
         
         # 将经验元组解压并转换为PyTorch张量
@@ -59,32 +68,107 @@ class DQN:
         rewards = torch.tensor([e[2] for e in minibatch if e is not None]).float()
         next_states = torch.from_numpy(np.vstack([e[3] for e in minibatch if e is not None])).float()
         dones = torch.tensor([e[4] for e in minibatch if e is not None]).float()
+        # 在这里断言以上张量的形状正确（强断言，便于尽早定位问题）
+        batch = states.shape[0]
+        assert batch == len(actions) == rewards.shape[0] == next_states.shape[0] == dones.shape[0], \
+            f"batch size mismatch: states {states.shape[0]}, actions {len(actions)}, rewards {rewards.shape[0]}, next_states {next_states.shape[0]}, dones {dones.shape[0]}"
+        assert states.dim() == 2 and states.shape[1] == self.state_size, \
+            f"state vector size mismatch: expected {self.state_size}, got {states.shape[1]}"
+        # 确保 dtype/device 可接受
+        assert states.dtype.is_floating_point and next_states.dtype.is_floating_point, "state tensors must be float"
+        # 记录当前采样批次信息（便于调试）
+        try:
+            self.qvalue_logger.write({
+                "event": "train_batch_sampled",
+                "batch_index": datetime.datetime.now().isoformat(),
+                "batch_size": int(batch)
+            })
+        except Exception:
+            pass
 
         # --- 1. 计算预测Q值 (Predicted Q-values) ---
         # 使用策略网络(policy_net)获取当前状态的Q值
         pred_action_q, pred_arg_q = self.policy_net(states)
-        
-        # 根据实际执行的动作，从多头输出中提取对应的Q值
-        predicted_q_values = []
+        expected_action_types = len(DecomposedActionType)
+        assert pred_action_q.dim() == 2 and pred_action_q.shape[0] == batch and pred_action_q.shape[1] == expected_action_types, \
+            f"pred_action_q shape unexpected: got {tuple(pred_action_q.shape)}, expected (batch, {expected_action_types})"
+        # 检查参数头存在并形状正确
+        assert isinstance(pred_arg_q, dict), "pred_arg_q must be a dict of argument heads"
+        assert 'play_card' in pred_arg_q and pred_arg_q['play_card'].dim() == 2 and pred_arg_q['play_card'].shape[0] == batch and pred_arg_q['play_card'].shape[1] == MAX_HAND_SIZE, \
+            f"play_card head shape incorrect: {pred_arg_q.get('play_card').shape if 'play_card' in pred_arg_q else None}"
+        assert 'target_monster' in pred_arg_q and pred_arg_q['target_monster'].dim() == 2 and pred_arg_q['target_monster'].shape[0] == batch and pred_arg_q['target_monster'].shape[1] == MAX_MONSTER_COUNT, \
+            f"target_monster head shape incorrect: {pred_arg_q.get('target_monster').shape if 'target_monster' in pred_arg_q else None}"
+        assert 'choose_option' in pred_arg_q and pred_arg_q['choose_option'].dim() == 2 and pred_arg_q['choose_option'].shape[0] == batch and pred_arg_q['choose_option'].shape[1] == MAX_DECK_SIZE, \
+            f"choose_option head shape incorrect: {pred_arg_q.get('choose_option').shape if 'choose_option' in pred_arg_q else None}"
+        assert 'potion' in pred_arg_q and pred_arg_q['potion'].dim() == 2 and pred_arg_q['potion'].shape[0] == batch and pred_arg_q['potion'].shape[1] == MAX_POTION_COUNT, \
+            f"potion head shape incorrect: {pred_arg_q.get('potion').shape if 'potion' in pred_arg_q else None}"
+
+        # 逐样本提取标量 Q 值并保留计算图（不转为 Python float）
+        predicted_q_values_list = []
+        debug_lines = []
         for i, action in enumerate(actions):
-            # 动作类型的Q值
-            decomposed_type = action.decomposed_type
-            # 使用安全索引，避免 action.decomposed_type.value 为字符串导致 TypeError
+            # 保证 action 是我们定义的结构体
+            assert action is not None, f"action at idx {i} is None"
             action_idx = self._action_index_from_decomposed(action)
+             # 容错：确保 action_idx 是 int（理论上 _action_index_from_decomposed 已保证，但加二重保险）
+            if action_idx is None:
+                debug_lines.append(f"action_idx is None for batch_idx={i}, action={repr(action)}; fallback to 0")
+                action_idx = 0
+            try:
+                action_idx = int(action_idx)
+            except Exception as e:
+                debug_lines.append(f"failed to convert action_idx to int for batch_idx={i}, action={repr(action)}: {e}; fallback to 0")
+                action_idx = 0
+            # 主动作Q（确保 action_idx 为 int 且在范围内）
+            assert 0 <= action_idx < expected_action_types, f"action_idx out of range: {action_idx} (expected 0..{expected_action_types-1})"
             q_val = pred_action_q[i, action_idx]
-            # 如果动作有参数，加上参数的Q值
+
+            # 参数Q累加（索引均强制为 int）
             if isinstance(action, PlayAction):
-                q_val += pred_arg_q['play_card'][i, action.hand_idx]
+                # 确保 hand_idx/target_idx 是 int 且在合法范围
+                hand_idx = int(action.hand_idx)
+                assert 0 <= hand_idx < MAX_HAND_SIZE, f"hand_idx out of range: {hand_idx}"
+                q_val = q_val + pred_arg_q['play_card'][i, hand_idx]
                 if action.target_idx is not None:
-                    q_val += pred_arg_q['target_monster'][i, action.target_idx]
+                    target_idx = int(action.target_idx)
+                    assert 0 <= target_idx < MAX_MONSTER_COUNT, f"target_idx out of range: {target_idx}"
+                    q_val = q_val + pred_arg_q['target_monster'][i, target_idx]
             elif isinstance(action, ChooseAction):
-                q_val += pred_arg_q['choose_option'][i, action.choice_idx]
+                choice_idx = int(action.choice_idx)
+                assert 0 <= choice_idx < MAX_DECK_SIZE, f"choice_idx out of range: {choice_idx}"
+                q_val = q_val + pred_arg_q['choose_option'][i, choice_idx]
             elif isinstance(action, PotionUseAction):
-                q_val += pred_arg_q['potion'][i, action.potion_idx]
+                potion_idx = int(action.potion_idx)
+                assert 0 <= potion_idx < MAX_POTION_COUNT, f"potion_idx out of range: {potion_idx}"
+                q_val = q_val + pred_arg_q['potion'][i, potion_idx]
                 if action.target_idx is not None:
-                    q_val += pred_arg_q['target_monster'][i, action.target_idx]
-            predicted_q_values.append(q_val)
-        predicted_q_values = torch.stack(predicted_q_values)
+                    target_idx = int(action.target_idx)
+                    assert 0 <= target_idx < MAX_MONSTER_COUNT, f"target_idx out of range: {target_idx}"
+                    q_val = q_val + pred_arg_q['target_monster'][i, target_idx]
+
+            # 保持为 torch scalar（0-d tensor）以保留梯度；若 q_val 非标量则 squeeze 或取第一个元素
+            if isinstance(q_val, torch.Tensor):
+                if q_val.numel() == 0:
+                    # 空张量回退为 0
+                    q_val = torch.tensor(0.0, device=q_val.device, dtype=q_val.dtype)
+                elif q_val.numel() > 1:
+                    # 多元素张量取均值（或首元素），保留计算图
+                    q_val = q_val.reshape(-1).mean()
+                # q_val.numel()==1 时保持原样（可能是 0-d 或 [1] 的 1-d tensor）
+            predicted_q_values_list.append(q_val)
+
+        # 写调试日志（若有）
+        if debug_lines:
+            try:
+                with open("training_debug.log", "a", encoding="utf-8") as df:
+                    for ln in debug_lines:
+                        df.write(ln + "\n")
+            except Exception:
+                pass
+        # 用 stack 组装为 1D tensor（保留梯度）
+        predicted_q_values = torch.stack(predicted_q_values_list)
+        assert predicted_q_values.dim() == 1 and predicted_q_values.shape[0] == batch, \
+            f"predicted_q_values shape invalid: {tuple(predicted_q_values.shape)}, expected ({batch},)"
 
         # --- 2. 计算目标Q值 (Target Q-values) ---
         # 使用目标网络(target_net)来计算下一状态的最大Q值，这可以稳定训练过程
@@ -95,12 +179,16 @@ class DQN:
             # TODO 可能更精确的方法更好，但我觉得估计这样应该就行了
             # 一个更精确的方法是找到下一状态Q值最高的完整动作（类型+参数）
             max_next_q = next_action_q.max(1)[0]
-            
+        assert max_next_q.dim() == 1 and max_next_q.shape[0] == batch, \
+            f"max_next_q shape invalid: {tuple(max_next_q.shape)}, expected ({batch},)"
+
         # 贝尔曼方程: Target = reward + gamma * max_next_q
         # 如果是回合结束(done=True)，则没有未来奖励，Target = reward
         target_q_values = rewards + (1 - dones) * self.gamma * max_next_q
-
-        # --- 3. 计算损失并进行反向传播 ---
+        assert target_q_values.shape == (batch,), f"target_q_values shape mismatch: {tuple(target_q_values.shape)} vs ({batch},)"
+ 
+         # --- 3. 计算损失并进行反向传播 ---
+         # 此时 predicted_q_values 和 target_q_values 都应为 shape=(batch,)
         loss = self.loss_fn(predicted_q_values, target_q_values)
         
         # 梯度清零
@@ -184,47 +272,17 @@ class DQN:
         elif action_type == DecomposedActionType.CHOOSE:
             # 当遇到商店选项的时候，首先要看需不需要进入商店
             if game_state.screen_type == ScreenType.SHOP_ROOM:
+                # 站在商店门口
                 if not self.visited_shop:
                     self.visited_shop = True
                     for i, option in enumerate(game_state.choice_list):
                         if option == 'shop':
+                            # 没来过的话就进去看看
                             return ChooseAction(type=ActionType.CHOOSE, choice_idx=i)
                 else:
+                    # 来过了的话，proceed 继续，然后后续必须立马往前进 TODO，否则再选到return的话，就在商店门口死循环了。
                     self.visited_shop = False
                     return SingleAction(type=ActionType.PROCEED, decomposed_type=ActionType.PROCEED)
-            # 实际上是不需要看买不买得起的，这里纯粹是因为没有leave的选项导致走不开商店导致的。
-            # 进入商店，弹出商店的Screen后，继续选择选项
-            # if game_state.screen_type == ScreenType.SHOP_SCREEN:
-            #     # 这里需要认定screen_type是SHOP_SCREEN才能继续选择商店选项
-            #     shop_screen:ShopScreen = game_state.screen
-            #     # 把所有物品中的最便宜的价格找出来
-            #     purge_cost = shop_screen.purge_cost
-            #     if purge_cost > game_state.gold:
-            #         # 买不起移除牌，把mask对应的位置设为-inf
-            #         index = self.choose_index_based_name(game_state.choice_list, 'purge')
-            #         masks['choose_option'][index] = false
-            #     for i, card in enumerate(shop_screen.cards):
-            #         card:Card = shop_screen.cards[i]
-            #         if card.cost > game_state.gold:
-            #             # 找到买不起的牌，把mask对应的位置设为-inf
-            #             index = self.choose_index_based_name(game_state.choice_list, card.name)
-            #             masks['choose_option'][index] = false
-            #     for i, relic in enumerate(shop_screen.relics):
-            #         relic:Relic = shop_screen.relics[i]
-            #         if relic.price > game_state.gold:
-            #             # 找到买不起的遗物，把mask对应的位置设为-inf
-            #             index = self.choose_index_based_name(game_state.choice_list, relic.name)
-            #             masks['choose_option'][index] = false
-            #     for i, potion in enumerate(shop_screen.potions):
-            #         potion:Potion = shop_screen.potions[i]
-            #         if potion.price > game_state.gold:
-            #             # 找到买不起的药水，把mask对应的位置设为-inf
-            #             index = self.choose_index_based_name(game_state.choice_list, potion.name)
-            #             masks['choose_option'][index] = false
-            #     # 如果choose_masks全部是false，说明买不起任何东西，只能选择离开
-            #     if not np.any(masks['choose_option']):
-            #         return SingleAction(type=ActionType.CANCEL, decomposed_type=ActionType.CANCEL)
-                
 
             choose_q = arg_q['choose_option'].squeeze(0)
             choose_mask = torch.from_numpy(masks['choose_option']).bool()
@@ -354,9 +412,13 @@ class DQN:
           - action.decomposed_type.value 是可以转为 int 的字符串
           - action.decomposed_type 是 Enum/IntEnum（通过成员的 value 或顺序）
           - 如果实例上定义了 ACTION_INDEX_MAP / action_index_map 字典，则使用该映射（支持 key 为 name 或 value）
+          失败时回退为 0（确保返回值永远是 int）。
         """
         # 尝试取 value
         dt = getattr(action, "decomposed_type", None)
+        if dt is None:
+            # action 没有 decomposed_type 属性，回退为 0
+            return 0
         val = getattr(dt, "value", None)
 
         # 直接是整数
@@ -376,3 +438,37 @@ class DQN:
                 return int(dt)
             except Exception:
                 pass
+        # 如果是 Enum/IntEnum，尝试用成员的 value 或成员顺序
+        try:
+            if hasattr(dt, "value"):
+                member_val = dt.value
+                if isinstance(member_val, int):
+                    return int(member_val)
+            enum_type = type(dt)
+            if hasattr(enum_type, "__members__"):
+                try:
+                    members = list(enum_type)
+                    return members.index(dt)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # 尝试类实例上的自定义映射
+        for attr in ("ACTION_INDEX_MAP", "action_index_map"):
+            m = getattr(self, attr, None)
+            if isinstance(m, dict):
+                # 尝试按 name 或 value 或字符串键匹配
+                key_candidates = []
+                if hasattr(dt, "name"):
+                    key_candidates.append(dt.name)
+                if isinstance(val, str):
+                    key_candidates.append(val)
+                key_candidates.append(str(dt))
+                for k in key_candidates:
+                    if k in m:
+                        try:
+                            return int(m[k])
+                        except Exception:
+                            continue
+        # 最后回退到 0（确保返回值是 int）
+        return 0
