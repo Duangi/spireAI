@@ -126,6 +126,7 @@ dmypy.json
 .idea/
 
 .vscode/
+logs/
 log/
 reward_log/
 state_log/

@@ -5,6 +5,7 @@ import os
 import sys
 import json
 from enum import Enum
+from spirecomm.utils.path import get_root_dir
 class LogType(Enum):
     """
     日志类型枚举类，用于指定日志的级别。
@@ -14,7 +15,8 @@ class LogType(Enum):
     STATE = 3
     QVALUE = 4
 # 获取当前项目的绝对路径的根目
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PROJECT_ROOT = get_root_dir()
+LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
 # 将以下类改为使用绝对路径
 class AbsoluteLogger:
     """
@@ -26,22 +28,22 @@ class AbsoluteLogger:
         # 如果是windows系统，换一个绝对路径D:\Projects\spireAI
         if log_type == LogType.PROGRESS:
             if os.name == 'nt':
-                log_file_path = os.path.join(PROJECT_ROOT, "log")
+                log_file_path = os.path.join(LOGS_DIR, "progress_log")
             else:
                 log_file_path = "/Users/duang/Projects/spireAI/log/"
         elif log_type == LogType.REWARD:
             if os.name == 'nt':
-                log_file_path = os.path.join(PROJECT_ROOT, "reward_log")
+                log_file_path = os.path.join(LOGS_DIR, "reward_log")
             else:
                 log_file_path = "/Users/duang/Projects/spireAI/reward_log/"
         elif log_type == LogType.STATE:
             if os.name == 'nt':
-                log_file_path = os.path.join(PROJECT_ROOT, "state_log")
+                log_file_path = os.path.join(LOGS_DIR, "state_log")
             else:
                 log_file_path = "/Users/duang/Projects/spireAI/state_log/"
         elif log_type == LogType.QVALUE:
             if os.name == 'nt':
-                log_file_path = os.path.join(PROJECT_ROOT, "qvalue_log")
+                log_file_path = os.path.join(LOGS_DIR, "qvalue_log")
             else:
                 log_file_path = "/Users/duang/Projects/spireAI/qvalue_log/"
         else:

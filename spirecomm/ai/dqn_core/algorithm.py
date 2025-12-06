@@ -77,14 +77,6 @@ class DQN:
         # 确保 dtype/device 可接受
         assert states.dtype.is_floating_point and next_states.dtype.is_floating_point, "state tensors must be float"
         # 记录当前采样批次信息（便于调试）
-        try:
-            self.qvalue_logger.write({
-                "event": "train_batch_sampled",
-                "batch_index": datetime.datetime.now().isoformat(),
-                "batch_size": int(batch)
-            })
-        except Exception:
-            pass
 
         # --- 1. 计算预测Q值 (Predicted Q-values) ---
         # 使用策略网络(policy_net)获取当前状态的Q值
@@ -186,11 +178,22 @@ class DQN:
         # 如果是回合结束(done=True)，则没有未来奖励，Target = reward
         target_q_values = rewards + (1 - dones) * self.gamma * max_next_q
         assert target_q_values.shape == (batch,), f"target_q_values shape mismatch: {tuple(target_q_values.shape)} vs ({batch},)"
- 
+
          # --- 3. 计算损失并进行反向传播 ---
          # 此时 predicted_q_values 和 target_q_values 都应为 shape=(batch,)
         loss = self.loss_fn(predicted_q_values, target_q_values)
         
+        # 输出所有 Q 值，loss 到日志，便于分析
+        try:
+            all_q_values = pred_action_q.detach().cpu().numpy()
+            self.qvalue_logger.write({
+                "loss": loss.item(),
+                "predicted_q_values": predicted_q_values.detach().cpu().numpy().tolist(),
+                "target_q_values": target_q_values.detach().cpu().numpy().tolist(),
+                "all_action_q_values": all_q_values.tolist()
+            })
+        except Exception:
+            pass
         # 梯度清零
         self.optimizer.zero_grad()
         # 反向传播

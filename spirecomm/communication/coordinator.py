@@ -239,7 +239,7 @@ class Coordinator:
         if not self.in_game:
             StartGameAction(player_class, ascension_level, seed).execute(self)
             chinese_name = player_class.get_chinese_name()
-            self.absolute_logger.write(f"开了一把新游戏，职业: {chinese_name}, 进阶等级: {ascension_level}, 种子: {seed}")
+            self.absolute_logger.write(f"开了一把新游戏，职业: {chinese_name}, 进阶等级: {ascension_level}, 种子: {seed}\n")
             self.receive_game_state_update(block=True)
         while self.in_game:
             self.execute_next_action_if_ready()
