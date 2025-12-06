@@ -240,9 +240,11 @@ class DQN:
         # 判断药水是否满了
         # 如果状态里面的choice_list有potion字段的话，把对应的index选出来，mask置为false，满了选不了药水
         if "choose" in game_state.available_commands:
-            potion_idx = self.choose_index_based_name(game_state.choice_list, 'potion')
-            if potion_idx is not None and game_state.are_potions_full():
-                masks['choose_option'][potion_idx] = 0  # 不能选药水了
+            potion_idxs = self.choose_index_based_name(game_state.choice_list, 'potion')
+            if potion_idxs is not None and game_state.are_potions_full():
+                # 可能同时有好几个药水选项
+                for potion_idx in potion_idxs:
+                    masks['choose_option'][potion_idx] = 0  # 不能选药水了
                 # 如果除了药水之外没有别的选项了，就把choose_option全屏蔽
                 choose_mask:np.ndarray = masks['choose_option']
                 # np底层优化过的函数，判断非零元素个数，比sum快 且更准确
@@ -365,10 +367,8 @@ class DQN:
 
     def choose_index_based_name(self, choice_list, name):
         """根据名称选择对应的索引"""
-        for i, choice in enumerate(choice_list):
-            if choice == name:
-                return i
-        return None
+        all_indices = [i for i, choice in enumerate(choice_list) if choice == name]
+        return all_indices
     def get_q_values(self, state, use_policy_net=True):
         """获取所有头的Q值"""
         with torch.no_grad():
