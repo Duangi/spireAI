@@ -283,7 +283,11 @@ class DQN:
                     # 来过了的话，proceed 继续，然后后续必须立马往前进 TODO，否则再选到return的话，就在商店门口死循环了。
                     self.visited_shop = False
                     return SingleAction(type=ActionType.PROCEED, decomposed_type=ActionType.PROCEED)
-
+            # 判断药水是否满了
+            # 如果状态里面的choice_list有potion字段的话，把对应的index选出来，mask置为false，满了选不了药水
+            potion_idx = self.choose_index_based_name(game_state.choice_list, 'potion')
+            if potion_idx is not None and len(game_state.potions) >= MAX_POTION_COUNT:
+                masks['choose_option'][potion_idx] = 0  # 不能选药水了
             choose_q = arg_q['choose_option'].squeeze(0)
             choose_mask = torch.from_numpy(masks['choose_option']).bool()
             choose_q[~choose_mask] = -float('inf')
