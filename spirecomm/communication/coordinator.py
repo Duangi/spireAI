@@ -14,6 +14,7 @@ from spirecomm.spire.game import Game
 from spirecomm.spire.screen import ScreenType
 from spirecomm.communication.action import Action, StartGameAction
 from spirecomm.spire.character import PlayerClass
+from spirecomm.utils.path import get_root_dir
 
 def read_stdin(input_queue):
     """Read lines from stdin and write them to a queue
@@ -259,7 +260,8 @@ class Coordinator:
         将本局结果写入 high_scores.json，保证以 utf-8 写入并使用 ensure_ascii=False 保留中文。
         不会抛异常（仅记录到 absolute_logger）。
         """
-        scores_path = r'D:/Projects/spireAI/high_scores.json'
+        
+        scores_path = os.path.join(get_root_dir(), "high_scores.json")
         try:
             # 读取已有数据（容错）
             if os.path.exists(scores_path):

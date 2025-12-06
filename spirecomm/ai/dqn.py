@@ -38,6 +38,7 @@ class DQNAgent:
 
         # 2. 用于存储上一步信息的变量
         self.previous_game_state = None
+        self.previous_prev_state = None # 上上一步状态，用于检测卡bug
         self.previous_action = None
         self.previous_state_tensor = None
 
@@ -57,7 +58,7 @@ class DQNAgent:
         if not self.play_mode:
             if self.previous_game_state is not None and self.previous_action is not None:
                 # a. 计算奖励
-                reward = self.reward_calculator.calculate(self.previous_game_state, game_state, self.previous_action)
+                reward = self.reward_calculator.calculate(self.previous_game_state, game_state, self.previous_action, self.previous_prev_state)
                 
                 # b. 处理新状态
                 next_state_tensor = self.state_processor.process(game_state)
@@ -84,7 +85,9 @@ class DQNAgent:
 
         # --- 为下一步做准备 ---
         # 存储当前的状态和动作用于下一次学习
+        self.previous_prev_state = self.previous_game_state
         self.previous_game_state = game_state
+
         self.previous_action = chosen_action
         self.previous_state_tensor = current_state_tensor
 

@@ -1,4 +1,5 @@
 from enum import Enum
+import xxhash
 
 from spirecomm.spire.relic import Relic
 from spirecomm.spire.character import Player, Monster, PlayerClass
@@ -82,6 +83,8 @@ class Game:
     choice_available: bool = False # 不用量化
 
     available_commands: List[str] = field(default_factory=list) # 不量化
+
+    
 
     def get_available_command_vector(self):
         """根据 available_commands 生成一个 multi-hot 编码的向量"""
@@ -204,8 +207,11 @@ class Game:
 
         # available commands flags
         parts.append(self.get_available_command_vector())
-        # concat all parts
-        return torch.cat([p.flatten() for p in parts])
+
+        result = torch.cat([p.flatten() for p in parts])
+        # 将result转成xxhash摘要保存到self._vector_hash中以备后续比较
+        self._vector_hash = xxhash.xxh64(result.detach().cpu().numpy().tobytes()).hexdigest()
+        return result
         
     @classmethod
     def from_json(cls, communication_state, available_commands=None):
@@ -272,8 +278,30 @@ class Game:
             game.cards_discarded_this_turn = combat_state.get("cards_discarded_this_turn", 0)
 
         game.available_commands = available_commands
+        # 确保任何缓存的向量摘要被清除（因为该实例刚被构建/修改）
+        try:
+            game._invalidate_vector_hash()
+        except Exception:
+            game._vector_hash = None
 
         return game
+
+    def __eq__(self, other):
+        """严格比较：如果两个 Game 的量化向量字节完全相同则视为相等（高效）。"""
+        if self == None or other == None:
+            return False
+        if not isinstance(other, Game):
+            return False
+        # 快速同对象判断
+        if self is other:
+            return True
+        try:
+            if self._vector_hash is not None and other._vector_hash is not None:
+                return self._vector_hash == other._vector_hash
+            else:
+                return torch.equal(self.get_vector().detach().cpu(), other.get_vector().detach().cpu())
+        except Exception:
+            return False
 
 if __name__ == "__main__":
     pass

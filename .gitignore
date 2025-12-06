@@ -132,3 +132,4 @@ state_log/
 train_log/
 models/
 qvalue_log/
+/high_scores.json

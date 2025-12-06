@@ -59,11 +59,14 @@ class RewardCalculator:
         self.CHOOSE_PENALTY_IN_COMBAT = -2.0
         # 战斗中选择了CONFIRM时给予奖励
         self.CONFIRM_REWARD_IN_COMBAT = 2.0
+        # 假设next_state和prev_prev_state完全一致的话，表示卡bug不动了，给予大大的惩罚！
+        self.STUCK_PENALTY = -100.0
+
 
         self.absolute_logger = AbsoluteLogger(LogType.REWARD)
         self.absolute_logger.start_episode()
 
-    def calculate(self, prev_state: Game, next_state:Game, action:BaseAction=None):
+    def calculate(self, prev_state: Game, next_state:Game, action:BaseAction=None, prev_prev_state: Game=None):
         """
         计算从 prev_state 转换到 next_state 所获得的奖励，并将各项明细通过 absolute_logger.write 输出，方便排查。
         """
@@ -270,6 +273,18 @@ class RewardCalculator:
                 value = self.CONFIRM_REWARD_IN_COMBAT
                 total_reward += value
                 contributions.append(("战斗中确认动作奖励", value, f"固定值={self.CONFIRM_REWARD_IN_COMBAT}"))
+        # --- 7. 卡bug检测 ---
+        if prev_prev_state is not None:
+            # 简单比较 prev_prev_state 和 next_state 的关键字段是否完全一致
+            try:
+                is_stuck = prev_prev_state == next_state
+            except Exception:
+                is_stuck = False  # 如果比较过程中出错，视为未卡住
+
+            if is_stuck:
+                value = self.STUCK_PENALTY
+                total_reward += value
+                contributions.append(("卡bug惩罚", value, "prev_prev_state 与 next_state 关键字段完全一致"))
         # 输出每一项贡献及总和，便于定位问题
         log_lines = ["奖励明细："]
         for name, val, detail in contributions:

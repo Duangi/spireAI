@@ -10,13 +10,15 @@ from spirecomm.ai.dqn import DQNAgent
 import os
 import time
 from datetime import datetime
+from spirecomm.utils.path import get_root_dir
 
 
 if __name__ == "__main__":
     # --- 1. 初始化 ---
-    # dqn_agent = DQNAgent("D:/Projects/spireAI/models/dqn_model_episode_140.pth")
-    # dqn_agent = DQNAgent(model_path=r'D:/Projects/spireAI/models/dqn_model_latest.pth')
-    dqn_agent = DQNAgent()
+    # 统一使用get_root_dir获取项目根目录
+    # dqn_agent = DQNAgent(os.path.join(get_root_dir(), "models", "dqn_model_episode_140.pth"))
+    dqn_agent = DQNAgent(model_path=os.path.join(get_root_dir(), "models", "dqn_model_latest.pth"))
+    # dqn_agent = DQNAgent()
     coordinator = Coordinator()
     
     coordinator.signal_ready()
@@ -55,7 +57,8 @@ if __name__ == "__main__":
         # 每隔N局游戏，保存模型权重
         if episode % SAVE_MODEL_FREQUENCY == 0:
             # 明确保存到项目下的 models 目录，便于查找
-            models_dir = r'D:/Projects/spireAI/models'
+            
+            models_dir = os.path.join(get_root_dir(), "models")
             try:
                 os.makedirs(models_dir, exist_ok=True)
                 save_path = os.path.join(models_dir, f"dqn_model_episode_{episode}.pth")
