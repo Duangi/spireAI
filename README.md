@@ -33,16 +33,28 @@ windows / mac
 ## 安装步骤
 （前提1）下载好并安装好杀戮尖塔游戏本体，并安装好上述mod
 （前提2）安装好python3.8+环境，并配置好pip
-1. 克隆本项目到本地
+1. **克隆本项目到本地**
 ```
 git clone https://github.com/Duangi/spireAI.git
 ```
-2. 进入项目目录，安装依赖
+2. （可选）通过conda创建虚拟环境
+```
+conda init
+conda create -n spireAI python=3.10.0
+conda activate spireAI
+```
+ps:windows可能会遇到的问题：终端左侧没有出现(base)
+- 解决方法：先解除限制，再重新初始化，最后重启终端
+```
+Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+conda init powershell
+```
+3. **进入项目目录，安装依赖**
 ```
 cd spireAI
 pip install -r requirements.txt
 ```
-3. （重要）配置Communication Mod
+4. **（重要）配置Communication Mod**
     - 下载mod并运行一次游戏使mod生成配置文件
     - 关闭游戏，找到系统对应的文件
         - **Windows:** `%LOCALAPPDATA%\ModTheSpire\`
@@ -51,4 +63,21 @@ pip install -r requirements.txt
     - 保存文件
     - 修改目录下的CommunicationMod/config.properties
     - **Windows:**`当前项目所在位置\\spireAI\\train.py`
+    ```python
+    # 以下为我的实际配置路径示例
+    command=D\:\\Projects\\spireAI\\train.py
+    # 如果使用了虚拟环境，这里需要加上虚拟环境的python解释器路径
+    command=C\:\\Users\\Admin\\miniconda3\\envs\\spire310\\python D\:\\Projects\\spireAI\\train.py
+    ```
+    - 如何查找python解释器路径：
+    ```bash
+    python -c "import sys; print(sys.executable)"
+    ```
     - **Mac:** `当前项目所在位置/spireAI/train.py`
+    ```python
+    command=/Users/duang/Projects/spireAI/train.py
+    # 如果使用了虚拟环境,和windows不一样的是，需要在train.py文件最前方加上虚拟环境
+    # 以下是我的实际路径示例
+    #!/opt/miniconda3/envs/spire/bin/python3
+    ```
+5. 打开游戏，进入mod界面，点击Communication Mod，在里面点击左侧的按钮就可以启动训练了。
