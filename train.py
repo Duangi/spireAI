@@ -17,8 +17,8 @@ if __name__ == "__main__":
     # --- 1. 初始化 ---
     # 统一使用get_root_dir获取项目根目录
     # dqn_agent = DQNAgent(os.path.join(get_root_dir(), "models", "dqn_model_episode_140.pth"))
-    dqn_agent = DQNAgent(model_path=os.path.join(get_root_dir(), "models", "dqn_model_latest.pth"))
-    # dqn_agent = DQNAgent()
+    # dqn_agent = DQNAgent(model_path=os.path.join(get_root_dir(), "models", "dqn_model_latest.pth"))
+    dqn_agent = DQNAgent()
     coordinator = Coordinator()
     
     coordinator.signal_ready()

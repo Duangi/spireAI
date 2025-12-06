@@ -33,7 +33,10 @@ class CommandType(Enum):
 
 COMMAND_MAP = {
     "end": CommandType.END_TURN,
+    # 兼容性：支持旧的 "potion" 字符串，同时接受明确的 "potion_use"/"potion_discard"
     "potion": CommandType.POTION,
+    "potion_use": CommandType.POTION,
+    "potion_discard": CommandType.POTION,
     "play": CommandType.PLAY,
     "proceed": CommandType.PROCEED, "confirm": CommandType.PROCEED,
     "cancel": CommandType.CANCEL, "leave": CommandType.CANCEL, "return": CommandType.CANCEL, "skip": CommandType.CANCEL

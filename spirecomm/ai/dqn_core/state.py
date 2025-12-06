@@ -49,7 +49,9 @@ class GameStateProcessor:
         play_card_mask = np.zeros(MAX_HAND_SIZE, dtype=bool)
         target_monster_mask = np.zeros(MAX_MONSTER_COUNT, dtype=bool)
         choose_option_mask = np.zeros(MAX_CHOOSE_COUNT, dtype=bool)
-        potion_mask = np.zeros(MAX_POTION_COUNT, dtype=bool)
+        # 将药水掩码拆分为使用（use）和丢弃（discard）两路
+        potion_use_mask = np.zeros(MAX_POTION_COUNT, dtype=bool)
+        potion_discard_mask = np.zeros(MAX_POTION_COUNT, dtype=bool)
 
         for action in available_actions:
             # 有对应的 DecomposedActionType 才设置掩码
@@ -65,11 +67,13 @@ class GameStateProcessor:
             elif isinstance(action, ChooseAction):
                 choose_option_mask[action.choice_idx] = True
             elif isinstance(action, PotionUseAction):
-                potion_mask[action.potion_idx] = True
+                # 明确标记可 use 的药水位
+                potion_use_mask[action.potion_idx] = True
                 if action.target_idx is not None:
                     target_monster_mask[action.target_idx] = True
             elif isinstance(action, PotionDiscardAction):
-                potion_mask[action.potion_idx] = True
+                # 明确标记可 discard 的药水位
+                potion_discard_mask[action.potion_idx] = True
                 
 
         self.absolute_logger.write("动作掩码生成完毕。\n")
@@ -78,15 +82,21 @@ class GameStateProcessor:
             'play_mask': str(play_card_mask.tolist()),
             'target_mask': str(target_monster_mask.tolist()),
             'choose_mask': str(choose_option_mask.tolist()),
-            'potion_mask': str(potion_mask.tolist()),
+            'potion_use_mask': str(potion_use_mask.tolist()),
+            'potion_discard_mask': str(potion_discard_mask.tolist()),
+            # 兼容：合并一个总的 potion_mask（use 或 discard 任一可行）
+            'potion_mask': str((potion_use_mask | potion_discard_mask).tolist()),
             'hand': str([str(card.name) for card in game_state.hand]),
         })
+        # 返回时提供独立的 potion_use / potion_discard，并保留向后兼容的 'potion'（合并）
         return {
             'action_type': action_type_mask,
             'play_card': play_card_mask,
             'target_monster': target_monster_mask,
             'choose_option': choose_option_mask,
-            'potion': potion_mask
+            'potion_use': potion_use_mask,
+            'potion_discard': potion_discard_mask,
+            'potion': (potion_use_mask | potion_discard_mask)
         }
 
     def get_available_actions(self, game: Game) -> List[BaseAction]:

@@ -92,8 +92,11 @@ class DQN:
             f"target_monster head shape incorrect: {pred_arg_q.get('target_monster').shape if 'target_monster' in pred_arg_q else None}"
         assert 'choose_option' in pred_arg_q and pred_arg_q['choose_option'].dim() == 2 and pred_arg_q['choose_option'].shape[0] == batch and pred_arg_q['choose_option'].shape[1] == MAX_DECK_SIZE, \
             f"choose_option head shape incorrect: {pred_arg_q.get('choose_option').shape if 'choose_option' in pred_arg_q else None}"
-        assert 'potion' in pred_arg_q and pred_arg_q['potion'].dim() == 2 and pred_arg_q['potion'].shape[0] == batch and pred_arg_q['potion'].shape[1] == MAX_POTION_COUNT, \
-            f"potion head shape incorrect: {pred_arg_q.get('potion').shape if 'potion' in pred_arg_q else None}"
+        # 现在药水分为 use / discard 两个独立头
+        assert 'potion_use' in pred_arg_q and pred_arg_q['potion_use'].dim() == 2 and pred_arg_q['potion_use'].shape[0] == batch and pred_arg_q['potion_use'].shape[1] == MAX_POTION_COUNT, \
+            f"potion_use head shape incorrect: {pred_arg_q.get('potion_use').shape if 'potion_use' in pred_arg_q else None}"
+        assert 'potion_discard' in pred_arg_q and pred_arg_q['potion_discard'].dim() == 2 and pred_arg_q['potion_discard'].shape[0] == batch and pred_arg_q['potion_discard'].shape[1] == MAX_POTION_COUNT, \
+            f"potion_discard head shape incorrect: {pred_arg_q.get('potion_discard').shape if 'potion_discard' in pred_arg_q else None}"
 
         # 逐样本提取标量 Q 值并保留计算图（不转为 Python float）
         predicted_q_values_list = []
@@ -132,11 +135,15 @@ class DQN:
             elif isinstance(action, PotionUseAction):
                 potion_idx = int(action.potion_idx)
                 assert 0 <= potion_idx < MAX_POTION_COUNT, f"potion_idx out of range: {potion_idx}"
-                q_val = q_val + pred_arg_q['potion'][i, potion_idx]
+                q_val = q_val + pred_arg_q['potion_use'][i, potion_idx]
                 if action.target_idx is not None:
                     target_idx = int(action.target_idx)
                     assert 0 <= target_idx < MAX_MONSTER_COUNT, f"target_idx out of range: {target_idx}"
                     q_val = q_val + pred_arg_q['target_monster'][i, target_idx]
+            elif isinstance(action, PotionDiscardAction):
+                potion_idx = int(action.potion_idx)
+                assert 0 <= potion_idx < MAX_POTION_COUNT, f"potion_idx out of range: {potion_idx}"
+                q_val = q_val + pred_arg_q['potion_discard'][i, potion_idx]
 
             # 保持为 torch scalar（0-d tensor）以保留梯度；若 q_val 非标量则 squeeze 或取第一个元素
             if isinstance(q_val, torch.Tensor):
@@ -336,9 +343,8 @@ class DQN:
         
         elif action_type == DecomposedActionType.POTION_DISCARD:
             # 需要选择丢弃哪个药水
-            potion_q = arg_q['potion'].squeeze(0)
-            # 假设丢弃药水的合法性掩码与使用药水相同
-            potion_mask = torch.from_numpy(masks['potion']).bool()
+            potion_q = arg_q['potion_discard'].squeeze(0)
+            potion_mask = torch.from_numpy(masks.get('potion_discard', masks.get('potion'))).bool()
             potion_q[~potion_mask] = -float('inf')
             if self.is_training:
                 potion_probs = torch.softmax(potion_q / self.temperature, dim=-1)
@@ -407,9 +413,12 @@ class DQN:
             elif isinstance(action, ChooseAction):
                 q_val += arg_q['choose_option'][action.choice_idx].item()
             elif isinstance(action, PotionUseAction):
-                q_val += arg_q['potion'][action.potion_idx].item()
+                q_val += arg_q['potion_use'][action.potion_idx].item()
                 if action.target_idx is not None:
                     q_val += arg_q['target_monster'][action.target_idx].item()
+            elif isinstance(action, PotionDiscardAction):
+                q_val += arg_q['potion_discard'][action.potion_idx].item()
+            
             q_values[action.to_string()] = q_val
         return q_values
 
