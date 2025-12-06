@@ -5,7 +5,6 @@ import os
 import sys
 import json
 from enum import Enum
-
 class LogType(Enum):
     """
     日志类型枚举类，用于指定日志的级别。
@@ -14,7 +13,9 @@ class LogType(Enum):
     REWARD = 2
     STATE = 3
     QVALUE = 4
-
+# 获取当前项目的绝对路径的根目
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 将以下类改为使用绝对路径
 class AbsoluteLogger:
     """
     一个简单的日志记录器，用于将字符串内容写入指定路径的文件。
@@ -23,22 +24,22 @@ class AbsoluteLogger:
         # 如果是windows系统，换一个绝对路径D:\Projects\spireAI
         if log_type == LogType.PROGRESS:
             if os.name == 'nt':
-                log_file_path = "D:/Projects/spireAI/log/"
+                log_file_path = os.path.join(PROJECT_ROOT, "log")
             else:
                 log_file_path = "/Users/duang/Projects/spireAI/log/"
         elif log_type == LogType.REWARD:
             if os.name == 'nt':
-                log_file_path = "D:/Projects/spireAI/reward_log/"
+                log_file_path = os.path.join(PROJECT_ROOT, "reward_log")
             else:
                 log_file_path = "/Users/duang/Projects/spireAI/reward_log/"
         elif log_type == LogType.STATE:
             if os.name == 'nt':
-                log_file_path = "D:/Projects/spireAI/state_log/"
+                log_file_path = os.path.join(PROJECT_ROOT, "state_log")
             else:
                 log_file_path = "/Users/duang/Projects/spireAI/state_log/"
         elif log_type == LogType.QVALUE:
             if os.name == 'nt':
-                log_file_path = "D:/Projects/spireAI/qvalue_log/"
+                log_file_path = os.path.join(PROJECT_ROOT, "qvalue_log")
             else:
                 log_file_path = "/Users/duang/Projects/spireAI/qvalue_log/"
         else:
@@ -52,19 +53,37 @@ class AbsoluteLogger:
         """在一局游戏开始时调用。"""
         self.step_count = 0
         self.start_time = datetime.datetime.now()
-        self.log_file_path = os.path.join(self.log_file_path, f"{self.start_time.strftime('%Y.%m.%d')}{self.start_time.strftime('_%H.%M.%S')}.txt")
+        filename = f"{self.start_time.strftime('%Y.%m.%d')}{self.start_time.strftime('_%H.%M.%S')}.txt"
+        self.log_file_path = os.path.join(self.log_file_path, filename)
+        # 确保目标目录存在（防止在并发/不同启动方式下出错）
+        log_dir = os.path.dirname(self.log_file_path)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
         self.file_handle = open(self.log_file_path, 'w', encoding='utf-8')
     
     def _ensure_dir_exists(self):
         """确保日志文件所在的目录存在。"""
-        log_dir = os.path.dirname(self.log_file_path)
-        if log_dir and not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-
+        # 如果当前 log_file_path 指向的是目录（初始化时通常为目录），直接确保该目录存在；
+        # 如果它已经是文件路径（start_episode 之后），则取其父目录。
+        path = self.log_file_path
+        # 判断 path 是否更像是文件：有扩展名或以 ".txt" 结尾
+        is_file_like = os.path.splitext(path)[1] != "" or path.lower().endswith('.txt')
+        log_dir = os.path.dirname(path) if is_file_like else path
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+ 
     def open(self, mode='w', encoding='utf-8'):
         """打开日志文件。"""
         if self.file_handle and not self.file_handle.closed:
             self.file_handle.close()
+        # 在打开文件前确保目录存在（兜底）
+        try:
+            log_dir = os.path.dirname(self.log_file_path)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
+        except Exception:
+            # 如果目录创建失败也不阻塞写入操作（open 会报错）
+            pass
         self.file_handle = open(self.log_file_path, mode, encoding=encoding)
 
     def write(self, content):

@@ -9,6 +9,7 @@ spireAI 是基于 DQN（Deep Q-Network）算法实现的《杀戮尖塔》AI 项
 ## 2.1 操作系统兼容性
 
 支持系统：Windows / Mac
+
 已验证环境：
 
 - Windows 11（N 卡环境）
