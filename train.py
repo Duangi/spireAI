@@ -30,8 +30,8 @@ if __name__ == "__main__":
 
     # --- 2. 定义训练超参数 ---
     NUM_EPISODES = 5000  # 总共训练5000局游戏
-    TARGET_UPDATE_FREQUENCY = 4 # 每 4 局游戏更新一次目标网络
-    SAVE_MODEL_FREQUENCY = 4 # 每 4 局游戏保存一次模型
+    TARGET_UPDATE_FREQUENCY = 40 # 每 40 局游戏更新一次目标网络
+    SAVE_MODEL_FREQUENCY = 40 # 每 40 局游戏保存一次模型
     TRAIN_BATCHES_PER_EPISODE = 64 # 每局游戏结束后，从经验池中采样训练的次数
     BATCH_SIZE = 32 # 每次训练时从经验池采样的大小
 
