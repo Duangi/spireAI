@@ -30,9 +30,7 @@ class RewardCalculator:
         # 每获得一瓶药水的奖励
         self.POTION_GAINED_REWARD = 5.0
         # 每失去一瓶药水的惩罚
-        self.POTION_LOST_PENALTY = -5.0
-        # 避免模型卡bug一直不动的微小惩罚
-        self.STEP_PUNISH = -0.5
+        self.POTION_DISCARD_PENALTY = -10.0
 
         # --- 游戏进程奖励 ---
         # Act 1 (1-17层) 每提升一层的奖励
@@ -61,6 +59,7 @@ class RewardCalculator:
         self.CONFIRM_REWARD_IN_COMBAT = 2.0
         # 假设next_state和prev_prev_state完全一致的话，表示卡bug不动了，给予大大的惩罚！
         self.STUCK_PENALTY = -100.0
+        self.stuck_count = 5
 
 
         self.absolute_logger = AbsoluteLogger(LogType.REWARD)
@@ -252,14 +251,14 @@ class RewardCalculator:
             total_reward += value
             contributions.append(("获得药水", value, f"change={potion_change} * mul={self.POTION_GAINED_REWARD}"))
         elif potion_change < 0:
-            value = abs(potion_change) * self.POTION_LOST_PENALTY
-            total_reward += value
-            contributions.append(("失去药水", value, f"change={potion_change} * mul={self.POTION_LOST_PENALTY}"))
-
-        # --- 5. 每步微小惩罚，防止卡bug不动 ---
-        value = self.STEP_PUNISH
-        total_reward += value
-        contributions.append(("每走一步的惩罚", value, f"固定值={self.STEP_PUNISH}"))
+            if action.decomposed_type == DecomposedActionType.POTION_DISCARD:
+                # 丢弃药水惩罚多一些
+                value = abs(potion_change) * self.POTION_DISCARD_PENALTY
+                total_reward += value
+                contributions.append(("丢弃药水惩罚", value, f"{self.POTION_DISCARD_PENALTY}"))
+            elif action.decomposed_type == DecomposedActionType.POTION_USE:
+                # 使用药水不惩罚
+                pass
 
         # --- 6. 战斗中选择动作的奖惩 ---
         if prev_state.in_combat and next_state.in_combat and action is not None:
@@ -274,10 +273,19 @@ class RewardCalculator:
                 total_reward += value
                 contributions.append(("战斗中确认动作奖励", value, f"固定值={self.CONFIRM_REWARD_IN_COMBAT}"))
         # --- 7. 卡bug检测 ---
+        # 因为需要打开选择界面来查看卡牌或者之类奖励的情况，由于卡牌不太好需要skip，此时也会导致prev_prev_state和next_state相同
+        # 因此这里需要给一个卡bug的次数阈值，暂定5次，因为有一个同时选5张牌的遗物。
+        # 这个次数阈值在层数变化时重置
+        is_stuck = False
+        if next_state.floor != prev_state.floor:
+            self.stuck_count = 5
         if prev_prev_state is not None:
             # 简单比较 prev_prev_state 和 next_state 的关键字段是否完全一致
             try:
-                is_stuck = prev_prev_state == next_state
+                if prev_prev_state == next_state:
+                    self.stuck_count -= 1
+                if self.stuck_count < 0:
+                    is_stuck = True
             except Exception:
                 is_stuck = False  # 如果比较过程中出错，视为未卡住
 
@@ -286,7 +294,7 @@ class RewardCalculator:
                 total_reward += value
                 contributions.append(("卡bug惩罚", value, "prev_prev_state 与 next_state 关键字段完全一致"))
         # 输出每一项贡献及总和，便于定位问题
-        log_lines = ["奖励明细："]
+        log_lines = ["\n奖励明细："]
         for name, val, detail in contributions:
             log_lines.append(f"  - {name}: {val} ({detail})")
         log_lines.append(f"总奖励: {total_reward}\n\n")

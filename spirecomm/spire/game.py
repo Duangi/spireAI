@@ -8,7 +8,7 @@ from spirecomm.spire.card import Card
 from spirecomm.spire.map import Map,Node
 from spirecomm.spire.screen import Screen, ScreenType, screen_from_json, RestOption
 from spirecomm.ai.constants import MAX_MAP_NODE_COUNT
-from spirecomm.ai.constants import MAX_HAND_SIZE, MAX_MONSTER_COUNT, MAX_DECK_SIZE, MAX_POTION_COUNT
+from spirecomm.ai.constants import MAX_HAND_SIZE, MAX_MONSTER_COUNT, MAX_DECK_SIZE, MAX_POTION_COUNT, CHOICE_LIST_MAX
 
 from spirecomm.utils.data_processing import _pad_vector_list
 
@@ -17,6 +17,8 @@ from typing import List
 import torch
 import torch.nn as nn
 from dataclasses import dataclass, field
+import numpy as np
+import logging
 
 class RoomPhase(Enum):
     COMBAT = 1
@@ -82,7 +84,7 @@ class Game:
     screen_type: ScreenType = ScreenType.NONE # one-hot量化，ScreenType的类型数量
     room_phase: RoomPhase = None # one-hot量化，RoomPhase的类型数量
     room_type: str = None # 先跳过不量化，后续知道所有房间类别之后再回来 TODO
-    choice_list: List[str] = field(default_factory=list) # 不用量化
+    choice_list: List[str] = field(default_factory=list) # 非常需要量化
     choice_available: bool = False # 不用量化
 
     available_commands: List[str] = field(default_factory=list) # 不量化
@@ -157,6 +159,19 @@ class Game:
             boss_onehot[opts.index(self.act_boss)] = 1.0
             # 如果是第四幕的最终boss的话，默认就是000，也可以，算是信息给到位了
         parts.append(boss_onehot)
+        # --- 新增：将当前可选项(choice_list)编码入向量 ---
+        # 最多编码 CHOICE_LIST_MAX 个，每个选项用归一化哈希值表示
+        choice_hashes = torch.zeros(CHOICE_LIST_MAX, dtype=torch.float32)
+        if getattr(self, "choice_list", []):
+            for i, choice in enumerate(self.choice_list[:CHOICE_LIST_MAX]):
+                try:
+                    choice_hashes[i] = get_hash_val_normalized(str(choice))
+                except Exception:
+                    # 若哈希失败则保持为0（稳健处理）
+                    choice_hashes[i] = 0.0
+        parts.append(choice_hashes)
+        # 2) 是否存在可选项（布尔标量）
+        parts.append(torch.tensor([1.0 if getattr(self, "choice_available", False) else 0.0], dtype=torch.float32))
 
         # combat related: in_combat, player (we encode player.class if available), monsters
         parts.append(torch.tensor([1.0 if self.in_combat else 0.0], dtype=torch.float32))
@@ -212,8 +227,18 @@ class Game:
         parts.append(self.get_available_command_vector())
 
         result = torch.cat([p.flatten() for p in parts])
-        # 将result转成xxhash摘要保存到self._vector_hash中以备后续比较
-        self._vector_hash = xxhash.xxh64(result.detach().cpu().numpy().tobytes()).hexdigest()
+        # 将 result 转为确定性的 contiguous float32 数组再摘要，避免 dtype/内存布局 导致差异
+        try:
+            arr = result.detach().cpu().numpy().astype(np.float32, copy=False)
+            arr = np.ascontiguousarray(arr)
+            self._vector_hash = xxhash.xxh64(arr.tobytes()).hexdigest()
+        except Exception:
+            # 若出错则退回到不抛异常的行为，并记录日志
+            logging.getLogger(__name__).exception("failed to compute vector hash, falling back")
+            try:
+                self._vector_hash = xxhash.xxh64(result.detach().cpu().numpy().tobytes()).hexdigest()
+            except Exception:
+                self._vector_hash = None
         return result
         
     @classmethod
@@ -296,18 +321,25 @@ class Game:
         return True
     def __eq__(self, other):
         """严格比较：如果两个 Game 的量化向量字节完全相同则视为相等（高效）。"""
-        if self == None or other == None:
+        # 使用 is None 避免递归调用 __eq__
+        if self is None or other is None:
             return False
         if not isinstance(other, Game):
-            return False
-        # 快速同对象判断
+             return False
+         # 快速同对象判断
         if self is other:
             return True
         try:
-            if self._vector_hash is not None and other._vector_hash is not None:
+            # 优先比较摘要（若都存在）
+            if getattr(self, "_vector_hash", None) is not None and getattr(other, "_vector_hash", None) is not None:
                 return self._vector_hash == other._vector_hash
-            else:
-                return torch.equal(self.get_vector().detach().cpu(), other.get_vector().detach().cpu())
+            # 摘要不可用时使用近似比较（允许浮点微小误差）
+            v1 = self.get_vector().detach().cpu()
+            v2 = other.get_vector().detach().cpu()
+            # 若形状不同，立即判为不等
+            if v1.shape != v2.shape:
+                return False
+            return torch.allclose(v1, v2, rtol=1e-5, atol=1e-8)
         except Exception:
             return False
 

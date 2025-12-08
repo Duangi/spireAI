@@ -1,4 +1,7 @@
 import torch
-print(f"Python版本：{torch.sys.version.split()[0]}")  # 输出3.8.x
-print(f"CUDA是否可用：{torch.cuda.is_available()}")   # 输出True
-print(f"CUDA版本：{torch.version.cuda}")             # 输出13.0 
+device = torch.device('cuda')
+a = torch.randn(2000,2000, device=device)
+for _ in range(5000):
+    a = a.matmul(a)
+torch.cuda.synchronize()
+print("done")

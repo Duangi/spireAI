@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from typing import List
+import logging
 
 import torch
 import torch.nn as nn
@@ -80,26 +81,44 @@ class Orb:
         ], dtype=torch.float32)
         return torch.cat([one_hot_id, normalized_amounts])
     @classmethod
-    def from_str_to_type(self, id_str:str) -> OrbType:
-        # 全部小写
-        id_str = id_str.lower()
-        if id_str == "lightning":
-            return OrbType.LIGHTNING
-        elif id_str == "frost":
-            return OrbType.FROST
-        elif id_str == "dark":
-            return OrbType.DARK
-        elif id_str == "plasma":
-            return OrbType.PLASMA
-        else:
-            raise ValueError(f"游戏中使用的球的id是：{id_str}，和类型定义中的有冲突，请检查代码")
+    def from_str_to_type(cls, id_str: str):
+        """
+        将字符串 id 转成 OrbType；遇到 None / 空 / 占位字符串（如 "empty"）或未知 id 时
+        返回 None（上层会忽略该 orb），并写警告日志。
+        """
+        if id_str is None:
+            return None
+        s = str(id_str).strip()
+        if s == "" or s.lower() == "empty":
+            logging.getLogger(__name__).warning("orb id is empty/placeholder: %r", id_str)
+            return None
+        # 允许常见大小写形式直接映射
+        key = s.lower()
+        mapping = {
+            "lightning": OrbType.LIGHTNING,
+            "frost": OrbType.FROST,
+            "dark": OrbType.DARK,
+            "plasma": OrbType.PLASMA
+        }
+        if key in mapping:
+            return mapping[key]
+        # 兼容直接使用枚举名（不区分大小写）
+        try:
+            return OrbType[s.upper()]
+        except Exception:
+            logging.getLogger(__name__).warning("unknown orb id: %r, skipping orb", id_str)
+            return None
+
     @classmethod
     def from_json(cls, json_object):
+        """从 JSON 构造 Orb；若无法解析 orb_id 返回 None（上层会跳过）。"""
         name = json_object.get("name")
         orb_id = cls.from_str_to_type(json_object.get("id"))
-        # orb_id = json_object.get("id")
-        evoke_amount = json_object.get("evoke_amount")
-        passive_amount = json_object.get("passive_amount")
+        if orb_id is None:
+            # 无效/占位 id，返回 None 以便调用方过滤
+            return None
+        evoke_amount = json_object.get("evoke_amount", 0)
+        passive_amount = json_object.get("passive_amount", 0)
         orb = Orb(name, orb_id, evoke_amount, passive_amount)
         return orb
 
@@ -161,7 +180,15 @@ class Player(Character):
     def from_json(cls, json_object):
         player = cls(json_object["max_hp"], json_object["current_hp"], json_object["block"], json_object["energy"])
         player.powers = [Power.from_json(json_power) for json_power in json_object["powers"]]
-        player.orbs = [Orb.from_json(orb) for orb in json_object.get("orbs", []) if orb.get("id") is not None]
+        # 安全解析 orbs：跳过 id 为 None 的项；Orb.from_json 返回 None 时也过滤掉
+        player.orbs = []
+        for orb_json in json_object.get("orbs", []):
+            # 跳过根本没有 id 字段的条目
+            if orb_json is None:
+                continue
+            orb_obj = Orb.from_json(orb_json)
+            if orb_obj is not None:
+                player.orbs.append(orb_obj)
         return player
     
     def to_json(self):

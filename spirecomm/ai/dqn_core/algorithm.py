@@ -236,10 +236,32 @@ class DQN:
         # 如果所有动作类型都被屏蔽了
         if not action_type_mask.any():
             raise ValueError("所有动作类型均被屏蔽，无法选择动作。")
-
+        
         # 判断药水是否满了
         # 如果状态里面的choice_list有potion字段的话，把对应的index选出来，mask置为false，满了选不了药水
         if "choose" in game_state.available_commands:
+            # 判断当前是否是商店页面，且药水栏满了而且钱够买药水
+            if game_state.screen_type == ScreenType.SHOP_SCREEN and game_state.are_potions_full():
+                # 收集所有需要屏蔽掉的name
+                potion_names = [potion.name for potion in game_state.screen.potions]
+                # 获得 potion_names 中每一个 name 在 choice_list 对应的 index（安全地跳过不存在的名字）
+                potion_idxs = []
+                for name in potion_names:
+                    try:
+                        potion_idxs.append(game_state.choice_list.index(name))
+                    except ValueError:
+                        # 如果某个名字不在 choice_list 中，可能表示不可购买/已经不存在，直接跳过
+                        continue
+                 # 可能同时有好几个药水选项
+                if potion_idxs:
+                    for potion_idx in potion_idxs:
+                        masks['choose_option'][potion_idx] = 0  # 不能选药水了
+                # 如果除了药水之外没有别的选项了，就把choose_option全屏蔽
+                choose_mask:np.ndarray = masks['choose_option']
+                # np底层优化过的函数，判断非零元素个数，比sum快 且更准确
+                if np.count_nonzero(choose_mask) == 0: 
+                    action_type_q[DecomposedActionType.CHOOSE.value] = -float('inf')
+
             potion_idxs = self.choose_index_based_name(game_state.choice_list, 'potion')
             if potion_idxs is not None and game_state.are_potions_full():
                 # 可能同时有好几个药水选项

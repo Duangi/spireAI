@@ -22,11 +22,8 @@ class DQNAgent:
         self.state_processor = GameStateProcessor()
         self.reward_calculator = RewardCalculator()
 
-        # 假设状态向量大小为 10358
-        state_size = 10358 
-        self.dqn_algorithm = DQN(state_size, self.state_processor)
-
-        
+        state_size = 10459  # 备用硬编码值
+        self.dqn_algorithm = DQN(int(state_size), self.state_processor)
 
         if self.play_mode:
             self.dqn_algorithm.set_inference_mode()

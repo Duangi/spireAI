@@ -11,3 +11,4 @@ MAX_CHOICES = 20 # 通用选择项的最大数量
 MAX_SHOP_ITEMS = 8 # 商店物品（7卡+1删牌）
 MAX_REST_OPTIONS = 6 # 休息处选项
 MAX_CHOOSE_COUNT = 100 # 假设可以选择100张牌，主要是在升级的时候
+CHOICE_LIST_MAX = 100 # 最大编码的 choice 数量（可调整）

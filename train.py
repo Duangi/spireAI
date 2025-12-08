@@ -15,15 +15,19 @@ from spirecomm.utils.path import get_root_dir
 
 # --- 2. 定义训练超参数 ---
 NUM_EPISODES = 5000  # 总共训练5000局游戏
-TARGET_UPDATE_FREQUENCY = 40 # 每 40 局游戏更新一次目标网络
-SAVE_MODEL_FREQUENCY = 40 # 每 40 局游戏保存一次模型
+TARGET_UPDATE_FREQUENCY = 10 # 每 10 局游戏更新一次目标网络
+SAVE_MODEL_FREQUENCY = 10 # 每 10 局游戏保存一次模型
 TRAIN_BATCHES_PER_EPISODE = 64 # 每局游戏结束后，从经验池中采样训练的次数
 BATCH_SIZE = 32 # 每次训练时从经验池采样的大小
 
 # 从最新的模型开始训练
-def get_latest_model_agent() -> Tuple[int,DQNAgent]:
+def get_latest_model_agent(player_class: PlayerClass = None) -> Tuple[int,DQNAgent]:
     models_dir = os.path.join(get_root_dir(), "models")
-    # 找到数字最大的模型文件
+    if player_class:
+        models_dir = os.path.join(models_dir, player_class.name)
+    # 找到数字最大的模型文件,如果没有则返回0和新建的DQNAgent
+    if not os.path.exists(models_dir):
+        return 0, DQNAgent()
     model_files = [f for f in os.listdir(models_dir) if f.startswith("dqn_model_episode_") and f.endswith(".pth")]
     if not model_files:
         return 0, DQNAgent()
@@ -82,7 +86,7 @@ def train_single_class(agent:DQNAgent, num_episodes:int = NUM_EPISODES, player_c
         _, agent = get_latest_model_agent()
     coordinator = setup_coordinator_for_agent(agent)
     chosen_class = player_class
-
+    agent.change_class(chosen_class)
     # 为该角色准备独立的模型保存目录：models/<PLAYERCLASS.name>
     class_models_dir = os.path.join(get_root_dir(), "models", str(player_class.name))
     # 继续使用 save_model_checkpoint(...)，它会负责创建目录
@@ -103,7 +107,7 @@ def train_single_class(agent:DQNAgent, num_episodes:int = NUM_EPISODES, player_c
         if episode % SAVE_MODEL_FREQUENCY == 0:
             save_model_checkpoint(agent, class_models_dir, episode, latest_episode)
 
-def train_all_classes(latest_episode: int = 0, num_episodes: int = NUM_EPISODES, agent: DQNAgent = None):
+def train_all_classes(agent: DQNAgent = None, num_episodes: int = NUM_EPISODES, ascension_level: int = 20, latest_episode: int = 0):
     """
     针对所有角色轮流训练 NUM_EPISODES 局（按常量 NUM_EPISODES）。
     会周期性更新 target_net 与保存模型（使用 SAVE_MODEL_FREQUENCY / TARGET_UPDATE_FREQUENCY）。
@@ -116,7 +120,7 @@ def train_all_classes(latest_episode: int = 0, num_episodes: int = NUM_EPISODES,
     for episode in range(1, num_episodes + 1):
         chosen_class = next(player_class_cycle)
         agent.change_class(chosen_class)
-        coordinator.play_one_game(chosen_class, ascension_level=20)
+        coordinator.play_one_game(chosen_class, ascension_level=ascension_level)
 
         # 学习阶段：每局结束后多次从经验池采样训练
         for _ in range(TRAIN_BATCHES_PER_EPISODE):
@@ -133,9 +137,15 @@ def train_all_classes(latest_episode: int = 0, num_episodes: int = NUM_EPISODES,
 
 # --- 1. 初始化 ---
 if __name__ == "__main__":
-    # --- 1. 初始化 --- 
-    latest_episode, dqn_agent = get_latest_model_agent()
+    # 在这里修改需要训练的角色与参数
+    player_class_to_train = PlayerClass.THE_SILENT
+    train_single_class_mode = True
+    ascension_level_to_train = 20
+    latest_episode, dqn_agent = get_latest_model_agent(player_class_to_train)
 
     # 采用统一的训练入口：按需选择单角色训练或全角色训练
     # 默认行为：训练所有角色
-    train_all_classes(latest_episode=latest_episode, agent=dqn_agent)
+    if train_single_class_mode:
+        train_single_class(dqn_agent, num_episodes=NUM_EPISODES,  ascension_level=ascension_level_to_train, player_class=player_class_to_train, latest_episode=latest_episode)
+    else:
+        train_all_classes(dqn_agent,num_episodes=NUM_EPISODES, ascension_level=ascension_level_to_train, latest_episode=latest_episode)
