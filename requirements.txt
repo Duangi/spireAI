@@ -2,3 +2,5 @@ torch
 numpy
 pandas
 xxhash
+python-dotenv
+wandb

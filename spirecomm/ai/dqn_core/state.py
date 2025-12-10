@@ -1,11 +1,26 @@
 from dataclasses import dataclass, field
-from spirecomm.ai.constants import MAX_CHOOSE_COUNT, MAX_HAND_SIZE, MAX_MONSTER_COUNT, MAX_POTION_COUNT
+from spirecomm.ai.constants import (
+    MAX_CHOOSE_COUNT, MAX_HAND_SIZE, MAX_MONSTER_COUNT, MAX_POTION_COUNT, 
+    MAX_DECK_SIZE, MAX_ORB_COUNT, MAX_POWER_COUNT, MAX_MAP_NODE_COUNT, 
+    MAX_SCREEN_ITEMS, MAX_SCREEN_MISC_DIM, MAX_SCREEN_ITEM_FEAT_DIM, MAX_CHOICE_LIST
+)
 from spirecomm.spire.game import Game
 from spirecomm.ai.dqn_core.action import  BaseAction, PlayAction, ChooseAction, PotionDiscardAction, PotionUseAction, SingleAction, ActionType, DecomposedActionType
 from typing import List
 import numpy as np
 from spirecomm.ai.absolute_logger import AbsoluteLogger, LogType
 import json
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from spirecomm.ai.dqn_core.model import SpireState
+from spirecomm.utils.data_processing import get_hash_id, minmax_normalize, norm_linear_clip, norm_log, norm_ratio
+from spirecomm.spire.card import Card, CardType, CardRarity
+from spirecomm.spire.relic import Relic
+from spirecomm.spire.potion import Potion
+from spirecomm.spire.character import Player, Monster, PlayerClass
+from spirecomm.spire.map import Map, Node
+from spirecomm.spire.screen import Screen
 
 @dataclass
 class GameStateProcessor:
@@ -18,20 +33,226 @@ class GameStateProcessor:
     absolute_logger: AbsoluteLogger = field(default_factory=lambda: AbsoluteLogger(LogType.STATE))
     def __post_init__(self):
         self.absolute_logger.start_episode()
-    def get_state_tensor(self, game: Game):
+    def get_state_tensor(self, game: Game) -> SpireState:
         """
-        从 Game 对象获取完整的、扁平化的状态向量。
-        :param game: spirecomm.spire.game.Game 的实例
-        :return: 一个一维的 PyTorch 张量
+        从 Game 对象获取完整的 SpireState 对象。
+        返回的 SpireState 中各 Tensor 均为非 Batch 维度 (即 Batch=1 的情况需自行 unsqueeze 或 collate)。
         """
-        return game.get_vector()
+        
+        # ==========================================
+        # 1. Global Numeric (17 dim)
+        # ==========================================
+        # MaxHP(1) + CurHP(1) + Ratio(1) + Floor(1) + Act(4) + Gold(1) + Class(4) + Ascension(1) + Boss(3)
+        
+        # Act One-hot
+        act_onehot = F.one_hot(torch.tensor(int(game.act) - 1, dtype=torch.long).clamp(0, 3), num_classes=4).float()
+        
+        # Class One-hot
+        class_onehot = F.one_hot(torch.tensor(int(game.character.value) - 1, dtype=torch.long).clamp(0, 3), num_classes=4).float()
+        
+        # Boss One-hot
+        act_boss_options = {
+            1: ["Slime Boss", "The Guardian", "Hexaghost"],
+            2: ["The Champ", "The Collector", "Bronze Automaton"],
+            3: ["Awakened One", "Time Eater", "Donu and Deca"]
+        }
+        boss_onehot = torch.zeros(3, dtype=torch.float32)
+        opts = act_boss_options.get(game.act, None)
+        if opts and game.act_boss in opts:
+            boss_onehot[opts.index(game.act_boss)] = 1.0
+
+        global_numeric = torch.cat([
+            torch.tensor([norm_linear_clip(game.max_hp, 80)], dtype=torch.float32),
+            torch.tensor([norm_linear_clip(game.current_hp, 150)], dtype=torch.float32),
+            torch.tensor([norm_ratio(game.current_hp, game.max_hp)], dtype=torch.float32),
+            torch.tensor([norm_linear_clip(game.floor, 60)], dtype=torch.float32),
+            act_onehot,
+            torch.tensor([norm_log(game.gold, 1000)], dtype=torch.float32),
+            class_onehot,
+            torch.tensor([minmax_normalize(game.ascension_level if game.ascension_level is not None else 0, 0, 20)], dtype=torch.float32),
+            boss_onehot
+        ])
+
+        # ==========================================
+        # 2. Action Mask
+        # ==========================================
+        masks = self.get_action_masks(game)
+        action_mask = torch.from_numpy(masks['action_type']).bool()
+
+        # ==========================================
+        # 3. Simple Lists (IDs only)
+        # ==========================================
+        def get_card_ids(cards, max_len):
+            ids = torch.zeros(max_len, dtype=torch.long)
+            for i, c in enumerate(cards[:max_len]):
+                ids[i] = get_hash_id(c.name)
+            return ids
+
+        deck_ids = get_card_ids(game.deck, MAX_DECK_SIZE)
+        draw_pile_ids = get_card_ids(game.draw_pile, MAX_DECK_SIZE)
+        discard_pile_ids = get_card_ids(game.discard_pile, MAX_DECK_SIZE)
+        exhaust_pile_ids = get_card_ids(game.exhaust_pile, MAX_DECK_SIZE)
+
+        # ==========================================
+        # 4. Hand (IDs + Feats)
+        # ==========================================
+        hand_ids = torch.zeros(MAX_HAND_SIZE, dtype=torch.long)
+        # 假设 Card.get_tensor_data 返回 (id, feat_vec)
+        # feat_vec 维度需确认，假设为 16
+        hand_feats = torch.zeros((MAX_HAND_SIZE, 16), dtype=torch.float32)
+        
+        for i, card in enumerate(game.hand[:MAX_HAND_SIZE]):
+            c_id, c_feat = card.get_tensor_data()
+            hand_ids[i] = c_id
+            hand_feats[i] = c_feat
+
+        # ==========================================
+        # 5. Relics
+        # ==========================================
+        # 假设 MAX_RELIC_COUNT = 25 (需确认常量，这里暂用25)
+        MAX_RELIC_COUNT = 25 
+        relic_ids = torch.zeros(MAX_RELIC_COUNT, dtype=torch.long)
+        relic_feats = torch.zeros((MAX_RELIC_COUNT, 3), dtype=torch.float32)
+        
+        for i, relic in enumerate(game.relics[:MAX_RELIC_COUNT]):
+            r_id, r_feat = relic.get_tensor_data()
+            relic_ids[i] = r_id
+            relic_feats[i] = r_feat
+
+        # ==========================================
+        # 6. Potions
+        # ==========================================
+        potion_ids = torch.zeros(MAX_POTION_COUNT, dtype=torch.long)
+        potion_feats = torch.zeros((MAX_POTION_COUNT, 2), dtype=torch.float32)
+        
+        for i, potion in enumerate(game.potions[:MAX_POTION_COUNT]):
+            p_id, p_feat = potion.get_tensor_data()
+            potion_ids[i] = p_id
+            # Potion.get_tensor_data 返回 4 维，截取前 2 维 (CanUse, CanDiscard)
+            # 或者根据 SpireState 定义调整。这里截取前2维。
+            potion_feats[i] = p_feat[:2]
+
+        # ==========================================
+        # 7. Choices
+        # ==========================================
+        choice_ids = torch.zeros(MAX_CHOICE_LIST, dtype=torch.long)
+        choice_list = getattr(game, 'choice_list', [])
+        if choice_list:
+            for i, choice_str in enumerate(choice_list[:MAX_CHOICE_LIST]):
+                choice_ids[i] = get_hash_id(choice_str)
+
+        # ==========================================
+        # 8. Card In Play
+        # ==========================================
+        card_in_play_id = torch.zeros(1, dtype=torch.long)
+        if game.card_in_play:
+            card_in_play_id[0] = get_hash_id(game.card_in_play.name)
+
+        # ==========================================
+        # 9. Player
+        # ==========================================
+        # Player.get_tensor_data returns (numeric, power_ids, power_feats, orb_ids, orb_vals)
+        if game.player:
+            p_num, p_pow_ids, p_pow_feats, p_orb_ids, p_orb_vals = game.player.get_tensor_data()
+            
+            player_numeric = p_num
+            player_power_ids = p_pow_ids
+            player_power_feats = p_pow_feats
+            player_orb_ids = p_orb_ids
+            player_orb_vals = p_orb_vals
+        else:
+            player_numeric = torch.zeros(5, dtype=torch.float32)
+            player_power_ids = torch.zeros(MAX_POWER_COUNT, dtype=torch.long)
+            player_power_feats = torch.zeros((MAX_POWER_COUNT, 3), dtype=torch.float32)
+            player_orb_ids = torch.zeros(MAX_ORB_COUNT, dtype=torch.long)
+            player_orb_vals = torch.zeros((MAX_ORB_COUNT, 2), dtype=torch.float32)
+
+        # ==========================================
+        # 10. Monsters
+        # ==========================================
+        monster_ids = torch.zeros(MAX_MONSTER_COUNT, dtype=torch.long)
+        monster_intent_ids = torch.zeros(MAX_MONSTER_COUNT, dtype=torch.long)
+        monster_numeric = torch.zeros((MAX_MONSTER_COUNT, 9), dtype=torch.float32) # 9 dim from Monster.get_tensor_data
+        monster_power_ids = torch.zeros((MAX_MONSTER_COUNT, MAX_POWER_COUNT), dtype=torch.long)
+        monster_power_feats = torch.zeros((MAX_MONSTER_COUNT, MAX_POWER_COUNT, 3), dtype=torch.float32)
+
+        for i, monster in enumerate(game.monsters[:MAX_MONSTER_COUNT]):
+            # Monster.get_tensor_data returns (numeric, identity_id, intent_id, power_ids, power_feats)
+            m_num, m_id, m_intent, m_pow_ids, m_pow_feats = monster.get_tensor_data()
+            
+            monster_ids[i] = m_id
+            monster_intent_ids[i] = m_intent
+            monster_numeric[i] = m_num
+            monster_power_ids[i] = m_pow_ids
+            monster_power_feats[i] = m_pow_feats
+
+        # ==========================================
+        # 11. Screen
+        # ==========================================
+        # Screen.get_tensor_data returns (type_val, misc_feats, item_ids, item_feats)
+        if game.screen:
+            s_type, s_misc, s_item_ids, s_item_feats = game.screen.get_tensor_data()
+            screen_type_val = torch.tensor([s_type], dtype=torch.long)
+            screen_misc = s_misc
+            screen_item_ids = s_item_ids
+            screen_item_feats = s_item_feats
+        else:
+            screen_type_val = torch.zeros(1, dtype=torch.long)
+            screen_misc = torch.zeros(MAX_SCREEN_MISC_DIM, dtype=torch.float32)
+            screen_item_ids = torch.zeros(MAX_SCREEN_ITEMS, dtype=torch.long)
+            screen_item_feats = torch.zeros((MAX_SCREEN_ITEMS, MAX_SCREEN_ITEM_FEAT_DIM), dtype=torch.float32)
+
+        # ==========================================
+        # 12. Map
+        # ==========================================
+        map_node_ids = torch.zeros(MAX_MAP_NODE_COUNT, dtype=torch.long)
+        map_node_coords = torch.zeros((MAX_MAP_NODE_COUNT, 2), dtype=torch.float32)
+        map_mask = torch.zeros(MAX_MAP_NODE_COUNT, dtype=torch.float32)
+
+        if game.map and game.map.nodes_flattened:
+            for i, node in enumerate(game.map.nodes_flattened[:MAX_MAP_NODE_COUNT]):
+                map_node_ids[i] = node.type_id
+                map_node_coords[i] = node.get_pos_features()
+                map_mask[i] = 1.0
+
+        return SpireState(
+            global_numeric=global_numeric,
+            action_mask=action_mask,
+            deck_ids=deck_ids,
+            draw_pile_ids=draw_pile_ids,
+            discard_pile_ids=discard_pile_ids,
+            exhaust_pile_ids=exhaust_pile_ids,
+            hand_ids=hand_ids,
+            hand_feats=hand_feats,
+            relic_ids=relic_ids,
+            relic_feats=relic_feats,
+            potion_ids=potion_ids,
+            potion_feats=potion_feats,
+            choice_ids=choice_ids,
+            card_in_play_id=card_in_play_id,
+            player_numeric=player_numeric,
+            player_power_ids=player_power_ids,
+            player_power_feats=player_power_feats,
+            player_orb_ids=player_orb_ids,
+            player_orb_vals=player_orb_vals,
+            monster_ids=monster_ids,
+            monster_intent_ids=monster_intent_ids,
+            monster_numeric=monster_numeric,
+            monster_power_ids=monster_power_ids,
+            monster_power_feats=monster_power_feats,
+            screen_type_val=screen_type_val,
+            screen_misc=screen_misc,
+            screen_item_ids=screen_item_ids,
+            screen_item_feats=screen_item_feats,
+            map_node_ids=map_node_ids,
+            map_node_coords=map_node_coords,
+            map_mask=map_mask
+        )
 
     def process(self, game: Game):
-        """将原始 game_state 字典转换为 PyTorch 张量。"""
-        # game_state 已经是 Game 对象了，直接使用
-        vector_tensor = game.get_vector()
-        # vector_tensor 已经是 Tensor，无需 from_numpy，只需确保类型和维度正确
-        return vector_tensor.float().unsqueeze(0)
+        """将原始 game_state 转换为 SpireState 对象 (不增加 Batch 维度)"""
+        return self.get_state_tensor(game)
+
 
     def get_action_masks(self, game_state: Game):
         """
@@ -152,3 +373,25 @@ class GameStateProcessor:
             actions.append(SingleAction(type=ActionType.LEAVE, decomposed_type=DecomposedActionType.LEAVE))
         
         return actions
+    
+if __name__ == "__main__":
+    # 测试 GameStateProcessor
+    from spirecomm.spire.game import game_from_json_file
+
+    # 加载示例游戏状态 JSON
+    game = game_from_json_file("sample_game_state.json")
+
+    # 创建处理器
+    processor = GameStateProcessor()
+
+    # 处理游戏状态
+    spire_state = processor.process(game)
+
+    # 输出结果形状
+    print("Global Numeric Shape:", spire_state.global_numeric.shape)
+    print("Action Mask Shape:", spire_state.action_mask.shape)
+    print("Hand IDs Shape:", spire_state.hand_ids.shape)
+    print("Hand Feats Shape:", spire_state.hand_feats.shape)
+    print("Player Numeric Shape:", spire_state.player_numeric.shape)
+    print("Monster IDs Shape:", spire_state.monster_ids.shape)
+    print("Monster Numeric Shape:", spire_state.monster_numeric.shape)

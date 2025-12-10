@@ -295,9 +295,13 @@ class RewardCalculator:
                 contributions.append(("卡bug惩罚", value, "prev_prev_state 与 next_state 关键字段完全一致"))
         # 输出每一项贡献及总和，便于定位问题
         log_lines = ["\n奖励明细："]
+        details_list = []
         for name, val, detail in contributions:
             log_lines.append(f"  - {name}: {val} ({detail})")
+            details_list.append(f"{name}: {val}")
         log_lines.append(f"总奖励: {total_reward}\n\n")
         self.absolute_logger.write("\n".join(log_lines))
 
-        return total_reward
+        # Return both total reward and details string
+        details_str = ", ".join(details_list)
+        return total_reward, details_str

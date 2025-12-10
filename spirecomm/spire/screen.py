@@ -1,13 +1,14 @@
 from enum import Enum
+from typing import List, Tuple
 import torch
 import torch.nn as nn
 
 from spirecomm.spire.potion import Potion
 from spirecomm.spire.card import Card
 from spirecomm.spire.relic import Relic
-from spirecomm.spire.map import Node
-from spirecomm.utils.data_processing import get_hash_val_normalized, normal_normalize, _pad_vector_list
-from spirecomm.ai.constants import MAX_DECK_SIZE, MAX_HAND_SIZE
+from spirecomm.spire.map import Map, Node
+from spirecomm.utils.data_processing import get_hash_id, normal_normalize, _pad_vector_list,norm_linear_clip
+from spirecomm.ai.constants import MAX_DECK_SIZE, MAX_HAND_SIZE, MAX_MAP_NODE_COUNT, MAX_SCREEN_ITEM_FEAT_DIM, MAX_SCREEN_ITEMS, MAX_SCREEN_MISC_DIM
 
 class ScreenType(Enum):
     EVENT = 1
@@ -81,37 +82,48 @@ class Screen:
     def from_json(cls, json_object):
         return cls()
 
-    @classmethod
-    def get_vec_length(cls):
-        """计算所有屏幕状态向量中的最大可能长度"""
-        shop_len = 7 * Card.get_vec_length() + 3 * Relic.get_vec_length() + 3 * Potion.get_vec_length() + 2
-        card_reward_len = 3 * Card.get_vec_length() + 1
-        grid_len = MAX_DECK_SIZE * Card.get_vec_length() + 4
-        hand_select_len = MAX_HAND_SIZE * Card.get_vec_length() + 2
-        rest_len = len(RestOption)
-        event_len = 1 + 5 # event_id_hash + 5 options hash
-        combat_reward_len = 5 * max(Card.get_vec_length(), Relic.get_vec_length(), Potion.get_vec_length(), 1) # 5 rewards, take max size
-        boss_reward_len = 3 * Relic.get_vec_length()
-
-        return max(shop_len, card_reward_len, grid_len, hand_select_len, rest_len, event_len, combat_reward_len, boss_reward_len)
-
-    def get_vector(self):
+    def get_tensor_data(self) -> Tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        为当前屏幕状态创建向量。
-        基类返回一个零向量。子类应覆盖此方法。
+        生成通用的屏幕上下文 Tensor。
+        
+        Returns:
+            screen_type: int
+            misc_feats: [SCREEN_MISC_DIM] (Float)
+            item_ids:   [MAX_SCREEN_ITEMS] (Long) # 告诉模型屏幕上有什么，它们查表得到的embedding id
+            item_feats: [MAX_SCREEN_ITEMS, 2] (Float) # 告诉模型屏幕上物品的特征（价格/状态等）
         """
-        return torch.zeros(self.get_vec_length())
+        screen_type_val = self.SCREEN_TYPE.value
+        misc_feats = torch.zeros(MAX_SCREEN_MISC_DIM, dtype=torch.float32)
+        item_ids = torch.zeros(MAX_SCREEN_ITEMS, dtype=torch.long)
+        item_feats = torch.zeros((MAX_SCREEN_ITEMS, MAX_SCREEN_ITEM_FEAT_DIM), dtype=torch.float32)
+        
+        # 基类默认返回空，子类覆盖逻辑填充
+        return screen_type_val, misc_feats, item_ids, item_feats
 
-    def _create_padded_vector(self, content_vector: torch.Tensor):
-        padded_vec = torch.zeros(self.get_vec_length())
-        padded_vec[:content_vector.numel()] = content_vector
-        return padded_vec
+    def _fill_items(self, 
+                    items: list, 
+                    item_ids: torch.Tensor, 
+                    item_feats: torch.Tensor, 
+                    get_id_func, 
+                    get_feat_func):
+        """通用填充辅助函数"""
+        count = 0
+        for item in items:
+            if count >= MAX_SCREEN_ITEMS: break
+            
+            # 填 ID
+            item_ids[count] = get_id_func(item)
+            # 填 特征 (价格/状态)
+            feats = get_feat_func(item)
+            item_feats[count] = torch.tensor(feats, dtype=torch.float32)
+            
+            count += 1
 
 class ChestScreen(Screen):
 
     SCREEN_TYPE = ScreenType.CHEST
 
-    def __init__(self, chest_type, chest_open):
+    def __init__(self, chest_type: ChestType, chest_open: bool):
         super().__init__()
         self.chest_type = chest_type
         self.chest_open = chest_open
@@ -132,6 +144,18 @@ class ChestScreen(Screen):
         chest_open = json_object.get("chest_open")
         return cls(chest_type, chest_open)
 
+    def get_tensor_data(self) -> Tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]:
+        screen_type_val = self.SCREEN_TYPE.value
+        
+        misc_feats = torch.zeros(MAX_SCREEN_MISC_DIM, dtype=torch.float32)
+        
+        item_ids = torch.zeros(MAX_SCREEN_ITEMS, dtype=torch.long)
+        # 根据from_json的chest_type字段生成唯一id
+        item_ids[0] = get_hash_id(self.chest_type.name + "Chest")
+        item_feats = torch.zeros((MAX_SCREEN_ITEMS, MAX_SCREEN_ITEM_FEAT_DIM), dtype=torch.float32)
+        item_feats[0, 0] = 1.0 if self.chest_open else 0.0  # chest_open状态作为特征
+        
+        return screen_type_val, misc_feats, item_ids, item_feats
 
 class EventScreen(Screen):
 
@@ -142,7 +166,7 @@ class EventScreen(Screen):
         self.event_name = name
         self.event_id = event_id
         self.body_text = body_text
-        self.options = []
+        self.options: List[EventOption] = []
 
     @classmethod
     def from_json(cls, json_object):
@@ -151,25 +175,43 @@ class EventScreen(Screen):
             event.options.append(EventOption.from_json(json_option))
         return event
     
-    def get_vector(self):
-        event_id_hash = get_hash_val_normalized(self.event_id)
-        option_hashes = torch.zeros(5)
-        for i, option in enumerate(self.options[:5]):
-            option_hashes[i] = get_hash_val_normalized(option.text)
-        content_vec = torch.cat([event_id_hash, option_hashes])
-        return self._create_padded_vector(content_vec)
+    def get_tensor_data(self) -> Tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        【接口 2】用于 Screen Context 生成
+        返回:
+            screen_type: int
+            misc_feats: [SCREEN_MISC_DIM] (Float)
+            item_ids:   [MAX_SCREEN_ITEMS] (Long)
+            item_feats: [MAX_SCREEN_ITEMS, 2] (Float)
+        """
+        screen_type_val = self.SCREEN_TYPE.value
+        misc_feats = torch.zeros(MAX_SCREEN_MISC_DIM, dtype=torch.float32)
+        # 这里就填一下具体是哪一个事件吧
+        misc_feats[0] = get_hash_id(self.event_name)
+        misc_feats[1] = get_hash_id(self.body_text)
+        item_ids = torch.zeros(MAX_SCREEN_ITEMS, dtype=torch.long)
+        # 用label作为id，因为label通常与choice_list里的选项字符串一致
+        for i, option in enumerate(self.options):
+            if i >= MAX_SCREEN_ITEMS:
+                break
+            item_ids[i] = get_hash_id(option.label if option.label else option.text)
+        # 不需要也根本没有feats，知道id就行
+        item_feats = torch.zeros((MAX_SCREEN_ITEMS, MAX_SCREEN_ITEM_FEAT_DIM), dtype=torch.float32)
+
+        return screen_type_val, misc_feats, item_ids, item_feats
+        
+        
 
 
 class ShopRoomScreen(Screen):
 
     SCREEN_TYPE = ScreenType.SHOP_ROOM
 
-
 class RestScreen(Screen):
 
     SCREEN_TYPE = ScreenType.REST
 
-    def __init__(self, has_rested, rest_options):
+    def __init__(self, has_rested, rest_options: List[RestOption]):
         super().__init__()
         self.has_rested = has_rested
         self.rest_options = rest_options
@@ -179,21 +221,31 @@ class RestScreen(Screen):
         rest_options = [RestOption[option.upper()] for option in json_object.get("rest_options")]
         return cls(json_object.get("has_rested"), rest_options)
     
-    def get_vector(self):
-        options_one_hot = torch.zeros(len(RestOption))
-        for option in self.rest_options:
-            options_one_hot[option.value - 1] = 1.0
-        return self._create_padded_vector(options_one_hot)
+    def get_tensor_data(self) -> Tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]:
+        screen_type_val = self.SCREEN_TYPE.value
+        
+        misc_feats = torch.zeros(MAX_SCREEN_MISC_DIM, dtype=torch.float32)
+        misc_feats[0] = 1.0 if self.has_rested else 0.0
+        
+        item_ids = torch.zeros(MAX_SCREEN_ITEMS, dtype=torch.long)
+        item_feats = torch.zeros((MAX_SCREEN_ITEMS, MAX_SCREEN_ITEM_FEAT_DIM), dtype=torch.float32)
+        
+        for i, option in enumerate(self.rest_options):
+            if i >= MAX_SCREEN_ITEMS:
+                break
+            item_ids[i] = get_hash_id(option.name)
+        
+        return screen_type_val, misc_feats, item_ids, item_feats
 
 
 class CardRewardScreen(Screen):
 
     SCREEN_TYPE = ScreenType.CARD_REWARD
 
-    def __init__(self, cards, can_bowl, can_skip):
+    def __init__(self, cards: List[Card], can_bowl: bool, can_skip: bool):
         super().__init__()
         self.cards = cards
-        self.can_bowl = can_bowl
+        self.can_bowl = can_bowl # 应该是放弃然后回2血
         self.can_skip = can_skip
 
     @classmethod
@@ -203,16 +255,29 @@ class CardRewardScreen(Screen):
         can_skip = json_object.get("skip_available")
         return cls(cards, can_bowl, can_skip)
     
-    def get_vector(self):
-        card_vectors = [card.get_vector() for card in self.cards[:3]]
-        padded_cards = _pad_vector_list(card_vectors, 3, Card.get_vec_length())
-        skip_vec = torch.tensor([1.0 if self.can_skip else 0.0], dtype=torch.float32)
-        return self._create_padded_vector(torch.cat([padded_cards, skip_vec]))
+    def get_tensor_data(self) -> Tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]:
+        screen_type_val = self.SCREEN_TYPE.value
+        
+        misc_feats = torch.zeros(MAX_SCREEN_MISC_DIM, dtype=torch.float32)
+        misc_feats[0] = 1.0 if self.can_bowl else 0.0
+        misc_feats[1] = 1.0 if self.can_skip else 0.0
+        
+        item_ids = torch.zeros(MAX_SCREEN_ITEMS, dtype=torch.long)
+        item_feats = torch.zeros((MAX_SCREEN_ITEMS, MAX_SCREEN_ITEM_FEAT_DIM), dtype=torch.float32)
+        
+        for i, card in enumerate(self.cards):
+            if i >= MAX_SCREEN_ITEMS:
+                break
+            # 用name作为id，因为choice_list里出现卡牌时，是以name为准的。
+            emb_id, feats = card.get_tensor_data()
+            item_ids[i] = emb_id
+            item_feats[i, :feats.numel()] = feats
 
+        return screen_type_val, misc_feats, item_ids, item_feats
 
 class CombatReward:
 
-    def __init__(self, reward_type, gold=0, relic=None, potion=None, link=None):
+    def __init__(self, reward_type: RewardType, gold=0, relic=None, potion=None, link=None):
         self.reward_type = reward_type
         self.gold = gold
         self.relic = relic
@@ -228,7 +293,7 @@ class CombatRewardScreen(Screen):
 
     SCREEN_TYPE = ScreenType.COMBAT_REWARD
 
-    def __init__(self, rewards):
+    def __init__(self, rewards: List[CombatReward]):
         super().__init__()
         self.rewards = rewards
 
@@ -249,24 +314,35 @@ class CombatRewardScreen(Screen):
                 rewards.append(CombatReward(reward_type))
         return cls(rewards)
     
-    def get_vector(self):
-        reward_vectors = []
-        # We need a unified size for different reward types
-        # Let's use the max size of card, relic, or potion vector
-        max_size = max(Card.get_vec_length(), Relic.get_vec_length(), Potion.get_vec_length(), 1)
-        for reward in self.rewards[:5]:
-            vec = torch.zeros(max_size)
-            if reward.reward_type == RewardType.GOLD:
-                vec[0] = normal_normalize(reward.gold, 10, 100)
-            elif reward.reward_type == RewardType.RELIC and reward.relic:
-                r_vec = reward.relic.get_vector(); vec[:r_vec.numel()] = r_vec
-            elif reward.reward_type == RewardType.POTION and reward.potion:
-                p_vec = reward.potion.get_vector(); vec[:p_vec.numel()] = p_vec
-            elif reward.reward_type == RewardType.CARD:
-                vec[0] = -1.0 # Special value to indicate a card reward choice
-            reward_vectors.append(vec)
-        return self._create_padded_vector(_pad_vector_list(reward_vectors, 5, max_size))
-
+    def get_tensor_data(self) -> Tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]:
+        screen_type_val = self.SCREEN_TYPE.value
+        
+        misc_feats = torch.zeros(MAX_SCREEN_MISC_DIM, dtype=torch.float32)
+        
+        item_ids = torch.zeros(MAX_SCREEN_ITEMS, dtype=torch.long)
+        item_feats = torch.zeros((MAX_SCREEN_ITEMS, MAX_SCREEN_ITEM_FEAT_DIM), dtype=torch.float32)
+        
+        for i, reward in enumerate(self.rewards):
+            if i >= MAX_SCREEN_ITEMS:
+                break
+            # 填特征
+            if reward.reward_type in [RewardType.GOLD, RewardType.STOLEN_GOLD]:
+                item_ids[i] = get_hash_id("Gold_Reward")
+                item_feats[i, 0] = norm_linear_clip(reward.gold, 300)  # 假设最大300金币
+            elif reward.reward_type == RewardType.RELIC and reward.relic is not None:
+                # relic的counter作为特征
+                emb_id, feats = reward.relic.get_tensor_data()
+                item_ids[i] = emb_id
+                item_feats[i, :feats.numel()] = feats
+            elif reward.reward_type == RewardType.POTION and reward.potion is not None:
+                # potion的potency作为特
+                emb_id, feats = reward.potion.get_tensor_data()
+                item_ids[i] = emb_id
+                item_feats[i, :feats.numel()] = feats
+            elif reward.reward_type == RewardType.SAPPHIRE_KEY and reward.link is not None:
+                # 进阶20的钥匙奖励
+                item_ids[i] = get_hash_id("Sapphire_Key_Reward")
+        return screen_type_val, misc_feats, item_ids, item_feats
 
 class MapScreen(Screen):
 
@@ -292,13 +368,64 @@ class MapScreen(Screen):
         else:
             next_nodes = []
         return cls(current_node, next_nodes, boss_available)
+    
+    def process_map_to_tensors(self,game_map: Map, current_x: int, current_y: int):
+        """
+        将 Map 对象转化为模型所需的 Tensor
+        """
+        if self.current_node is None:
+            raise ValueError("当前节点不能为空以处理地图")
+        current_x = self.current_node.x
+        current_y = self.current_node.y
+        # 初始化 Tensor (全部填0/Padding)
+        # node_ids: LongTensor
+        node_ids = torch.zeros(MAX_MAP_NODE_COUNT, dtype=torch.long)
+        # coords: FloatTensor
+        node_coords = torch.zeros((MAX_MAP_NODE_COUNT, 2), dtype=torch.float32)
+        # mask: FloatTensor
+        reachable_mask = torch.zeros(MAX_MAP_NODE_COUNT, dtype=torch.float32)
+        if game_map is not None and game_map.nodes_flattened:
+            # 1. 获取可达性列表 (Python List[bool])
+            # 使用你刚刚修复好的 get_reachable_mask
+            bool_mask = game_map.get_reachable_mask(current_x, current_y)
+            
+            # 2. 遍历所有节点进行填充
+            # 只取前 MAX_MAP_NODE_COUNT 个，防止越界
+            num_nodes = min(len(game_map.nodes_flattened), MAX_MAP_NODE_COUNT)
+            
+            for i in range(num_nodes):
+                node = game_map.nodes_flattened[i]
+                
+                # A. 填入 ID (你的 type_id 属性，已包含 BOSS 逻辑)
+                node_ids[i] = node.type_id 
+                
+                # B. 填入坐标 (你的 get_pos_features 方法)
+                node_coords[i] = node.get_pos_features()
+                
+                # C. 填入掩码
+                if bool_mask[i]:
+                    reachable_mask[i] = 1.0
+                else:
+                    reachable_mask[i] = 0.0
 
+        return node_ids, node_coords, reachable_mask
+
+    def get_tensor_data(self) -> Tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]:
+        screen_type_val = self.SCREEN_TYPE.value
+        
+        misc_feats = torch.zeros(MAX_SCREEN_MISC_DIM, dtype=torch.float32)
+        misc_feats[0] = 1.0 if self.boss_available else 0.0
+        
+        item_ids = torch.zeros(MAX_SCREEN_ITEMS, dtype=torch.long)
+        item_feats = torch.zeros((MAX_SCREEN_ITEMS, MAX_SCREEN_ITEM_FEAT_DIM), dtype=torch.float32)
+        
+        return screen_type_val, misc_feats, item_ids, item_feats
 
 class BossRewardScreen(Screen):
 
     SCREEN_TYPE = ScreenType.BOSS_REWARD
 
-    def __init__(self, relics):
+    def __init__(self, relics: List[Relic]):
         super().__init__()
         self.relics = relics
 
@@ -307,17 +434,29 @@ class BossRewardScreen(Screen):
         relics = [Relic.from_json(relic) for relic in json_object.get("relics")]
         return cls(relics)
     
-    def get_vector(self):
-        relic_vectors = [relic.get_vector() for relic in self.relics[:3]]
-        padded_relics = _pad_vector_list(relic_vectors, 3, Relic.get_vec_length())
-        return self._create_padded_vector(padded_relics)
+    def get_tensor_data(self) -> Tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]:
+        screen_type_val = self.SCREEN_TYPE.value
+        
+        misc_feats = torch.zeros(MAX_SCREEN_MISC_DIM, dtype=torch.float32)
+        
+        item_ids = torch.zeros(MAX_SCREEN_ITEMS, dtype=torch.long)
+        item_feats = torch.zeros((MAX_SCREEN_ITEMS, MAX_SCREEN_ITEM_FEAT_DIM), dtype=torch.float32)
+        
+        for i, relic in enumerate(self.relics):
+            if i >= MAX_SCREEN_ITEMS:
+                break
+            emb_id, feats = relic.get_tensor_data()
+            item_ids[i] = emb_id
+            item_feats[i, :feats.numel()] = feats
+
+        return screen_type_val, misc_feats, item_ids, item_feats
 
 
 class ShopScreen(Screen):
 
     SCREEN_TYPE = ScreenType.SHOP_SCREEN
 
-    def __init__(self, cards, relics, potions, purge_available, purge_cost):
+    def __init__(self, cards: List[Card], relics: List[Relic], potions: List[Potion], purge_available: bool, purge_cost: int):
         super().__init__()
         self.cards = cards
         self.relics = relics
@@ -334,31 +473,55 @@ class ShopScreen(Screen):
         purge_cost = json_object.get("purge_cost")
         return cls(cards, relics, potions, purge_available, purge_cost)
     
-    def get_vector(self):
-        card_vectors = [card.get_vector() for card in self.cards[:7]]
-        padded_cards = _pad_vector_list(card_vectors, 7, Card.get_vec_length())
+    def get_tensor_data(self) -> Tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]:
+        screen_type_val = self.SCREEN_TYPE.value
+        
+        misc_feats = torch.zeros(MAX_SCREEN_MISC_DIM, dtype=torch.float32)
+        misc_feats[0] = 1.0 if self.purge_available else 0.0
+        misc_feats[1] = norm_linear_clip(self.purge_cost, 300)
+        
+        item_ids = torch.zeros(MAX_SCREEN_ITEMS, dtype=torch.long)
+        item_feats = torch.zeros((MAX_SCREEN_ITEMS, MAX_SCREEN_ITEM_FEAT_DIM), dtype=torch.float32)
+        
+        count = 0
+        # 填卡牌
+        for card in self.cards:
+            if count >= MAX_SCREEN_ITEMS:
+                break
+            emb_id, feats = card.get_tensor_data()
+            item_ids[count] = emb_id
+            item_feats[count, :feats.numel()] = feats
+            count += 1
+        # 填遗物
+        for relic in self.relics:
+            if count >= MAX_SCREEN_ITEMS:
+                break
+            emb_id, feats = relic.get_tensor_data()
+            item_ids[count] = emb_id
+            item_feats[count, :feats.numel()] = feats
+            count += 1
+        # 填药水
+        for potion in self.potions:
+            if count >= MAX_SCREEN_ITEMS:
+                break
+            emb_id, feats = potion.get_tensor_data()
+            item_ids[count] = emb_id
+            item_feats[count, :feats.numel()] = feats
+            count += 1
 
-        relic_vectors = [relic.get_vector() for relic in self.relics[:3]]
-        padded_relics = _pad_vector_list(relic_vectors, 3, Relic.get_vec_length())
-
-        potion_vectors = [potion.get_vector() for potion in self.potions[:3]]
-        padded_potions = _pad_vector_list(potion_vectors, 3, Potion.get_vec_length())
-
-        purge_vec = torch.tensor([1.0 if self.purge_available else 0.0, normal_normalize(self.purge_cost, 50, 150)], dtype=torch.float32)
-
-        content_vec = torch.cat([padded_cards, padded_relics, padded_potions, purge_vec])
-        return self._create_padded_vector(content_vec)
+        return screen_type_val, misc_feats, item_ids, item_feats
+        
 
 
 class GridSelectScreen(Screen):
 
     SCREEN_TYPE = ScreenType.GRID
 
-    def __init__(self, cards, selected_cards, num_cards, any_number, confirm_up, for_upgrade, for_transform, for_purge):
+    def __init__(self, cards:List[Card], selected_cards:List[Card], num_cards:int, any_number:bool, confirm_up:bool, for_upgrade:bool, for_transform:bool, for_purge:bool):
         super().__init__()
         self.cards = cards
         self.selected_cards = selected_cards
-        self.num_cards = num_cards
+        self.num_cards = num_cards # 可选择的卡牌数量
         self.any_number = any_number
         self.confirm_up = confirm_up
         self.for_upgrade = for_upgrade
@@ -377,25 +540,45 @@ class GridSelectScreen(Screen):
         for_purge = json_object.get("for_purge")
         return cls(cards, selected_cards, num_cards, any_number, confirm_up, for_upgrade, for_transform, for_purge)
     
-    def get_vector(self):
-        purpose_vec = torch.tensor([
-            1.0 if self.for_upgrade else 0.0,
-            1.0 if self.for_transform else 0.0,
-            1.0 if self.for_purge else 0.0,
-            normal_normalize(self.num_cards, 1, 10)
-        ], dtype=torch.float32)
-        card_vectors = [card.get_vector() for card in self.cards[:MAX_DECK_SIZE]]
-        return self._create_padded_vector(torch.cat([purpose_vec, _pad_vector_list(card_vectors, MAX_DECK_SIZE, Card.get_vec_length())]))
+    def get_tensor_data(self) -> Tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]:
+        screen_type_val = self.SCREEN_TYPE.value
+        
+        misc_feats = torch.zeros(MAX_SCREEN_MISC_DIM, dtype=torch.float32)
+        misc_feats[0] = norm_linear_clip(self.num_cards, 10) # 预见？预见100张牌？倒不是没有这个可能
+        misc_feats[1] = 1.0 if self.any_number else 0.0
+        misc_feats[2] = 1.0 if self.confirm_up else 0.0
+        misc_feats[3] = 1.0 if self.for_upgrade else 0.0
+        misc_feats[4] = 1.0 if self.for_transform else 0.0
+        misc_feats[5] = 1.0 if self.for_purge else 0.0
+        
+        item_ids = torch.zeros(MAX_SCREEN_ITEMS, dtype=torch.long)
+        item_feats = torch.zeros((MAX_SCREEN_ITEMS, MAX_SCREEN_ITEM_FEAT_DIM), dtype=torch.float32)
+        
+        # 现在扩充到了120个槽位，前100个放卡牌，后20个放已选择的卡牌
+        for i, card in enumerate(self.cards):
+            if i >= MAX_SCREEN_ITEMS:
+                break
+            emb_id, feats = card.get_tensor_data()
+            item_ids[i] = emb_id
+            item_feats[i, :feats.numel()] = feats
+        offset = 100
+        for i, card in enumerate(self.selected_cards):
+            if i + offset >= MAX_SCREEN_ITEMS:
+                break
+            emb_id, feats = card.get_tensor_data()
+            item_ids[i + offset] = emb_id
+            item_feats[i + offset, :feats.numel()] = feats
 
+        return screen_type_val, misc_feats, item_ids, item_feats
 
 class HandSelectScreen(Screen):
 
     SCREEN_TYPE = ScreenType.HAND_SELECT
 
-    def __init__(self, cards, selected, num_cards, can_pick_zero):
+    def __init__(self, cards:List[Card], selected_cards:List[Card], num_cards:int, can_pick_zero:bool):
         super().__init__()
         self.cards = cards
-        self.selected_cards = selected
+        self.selected_cards = selected_cards
         self.num_cards = num_cards
         self.can_pick_zero = can_pick_zero
 
@@ -407,14 +590,32 @@ class HandSelectScreen(Screen):
         can_pick_zero = json_object.get("can_pick_zero")
         return cls(cards, selected_cards, num_cards, can_pick_zero)
     
-    def get_vector(self):
-        info_vec = torch.tensor([
-            normal_normalize(self.num_cards, 1, 10),
-            1.0 if self.can_pick_zero else 0.0
-        ], dtype=torch.float32)
-        card_vectors = [card.get_vector() for card in self.cards[:MAX_HAND_SIZE]]
-        return self._create_padded_vector(torch.cat([info_vec, _pad_vector_list(card_vectors, MAX_HAND_SIZE, Card.get_vec_length())]))
+    def get_tensor_data(self) -> Tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]:
+        screen_type_val = self.SCREEN_TYPE.value
+        
+        misc_feats = torch.zeros(MAX_SCREEN_MISC_DIM, dtype=torch.float32)
+        misc_feats[0] = norm_linear_clip(self.num_cards, MAX_HAND_SIZE)
+        misc_feats[1] = 1.0 if self.can_pick_zero else 0.0
+        
+        item_ids = torch.zeros(MAX_SCREEN_ITEMS, dtype=torch.long)
+        item_feats = torch.zeros((MAX_SCREEN_ITEMS, MAX_SCREEN_ITEM_FEAT_DIM), dtype=torch.float32)
+        
+        # 前10个槽位放手牌，后10个槽位放已选择的牌
+        for i, card in enumerate(self.cards):
+            if i >= MAX_SCREEN_ITEMS:
+                break
+            emb_id, feats = card.get_tensor_data()
+            item_ids[i] = emb_id
+            item_feats[i, :feats.numel()] = feats
+        offset = 10
+        for i, card in enumerate(self.selected_cards):
+            if i + offset >= MAX_SCREEN_ITEMS:
+                break
+            emb_id, feats = card.get_tensor_data()
+            item_ids[i + offset] = emb_id
+            item_feats[i + offset, :feats.numel()] = feats
 
+        return screen_type_val, misc_feats, item_ids, item_feats
 
 class GameOverScreen(Screen):
 
@@ -429,12 +630,17 @@ class GameOverScreen(Screen):
     def from_json(cls, json_object):
         return cls(json_object.get("score"), json_object.get("victory"))
     
-    def get_vector(self):
-        game_over_vec = torch.tensor([
-            1.0 if self.victory else 0.0,
-            normal_normalize(self.score, 0, 2000)
-        ], dtype=torch.float32)
-        return self._create_padded_vector(game_over_vec)
+    def get_tensor_data(self) -> Tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]:
+        screen_type_val = self.SCREEN_TYPE.value
+        
+        misc_feats = torch.zeros(MAX_SCREEN_MISC_DIM, dtype=torch.float32)
+        misc_feats[0] = norm_linear_clip(self.score, 10000) # 假设最高10000分
+        misc_feats[1] = 1.0 if self.victory else 0.0
+        
+        item_ids = torch.zeros(MAX_SCREEN_ITEMS, dtype=torch.long)
+        item_feats = torch.zeros((MAX_SCREEN_ITEMS, MAX_SCREEN_ITEM_FEAT_DIM), dtype=torch.float32)
+        
+        return screen_type_val, misc_feats, item_ids, item_feats
 
 
 class CompleteScreen(Screen):
@@ -462,49 +668,3 @@ SCREEN_CLASSES = {
 
 def screen_from_json(screen_type, json_object):
     return SCREEN_CLASSES[screen_type].from_json(json_object)
-
-if __name__ == "__main__":
-    import json
-    # 避免循环导入，仅在测试时导入
-    from spirecomm.spire.game import Game
-
-    # 辅助函数，用于打印和断言
-    def assert_and_print(name, tensor, expected_len, full_preview=False):
-        actual_len = tensor.numel()
-        assert actual_len == expected_len, f"{name} 长度错误! 预期: {expected_len}, 实际: {actual_len}"
-        print(f"\n[ {name} ] - 长度: {actual_len}")
-        if full_preview:
-            preview = tensor.flatten()
-        else:
-            preview = tensor.flatten()[:10]
-        print(f"  - 内容预览: {preview.tolist()}")
-
-    # --- 测试 CardRewardScreen ---
-    print("\n\n--- 测试 CardRewardScreen 的向量化 ---")
-    card_reward_state_json = """
-    {"available_commands":["choose","skip","key","click","wait","state"],"ready_for_command":true,"in_game":true,"game_state":{"choice_list":["杂技","灾祸","带毒刺击"],"screen_type":"CARD_REWARD","screen_state":{"cards":[{"exhausts":false,"is_playable":false,"cost":1,"name":"杂技","id":"Acrobatics","type":"SKILL","ethereal":false,"uuid":"a1fdfc68-cca6-4e48-97ae-7ce9ee8b2218","upgrades":0,"rarity":"COMMON","has_target":false},{"exhausts":false,"is_playable":false,"cost":1,"name":"灾祸","id":"Bane","type":"ATTACK","ethereal":false,"uuid":"4b90e05c-0d41-4fdf-81a1-9ff9de75f8ef","upgrades":0,"rarity":"COMMON","has_target":true},{"exhausts":false,"is_playable":false,"cost":1,"name":"带毒刺击","id":"Poisoned Stab","type":"ATTACK","ethereal":false,"uuid":"75dcd791-470a-494b-b6dc-e7f63c948a69","upgrades":0,"rarity":"COMMON","has_target":true}],"bowl_available":false,"skip_available":true},"seed":-164215452355420946,"deck":[],"relics":[],"max_hp":70,"act_boss":"The Guardian","gold":99,"action_phase":"WAITING_ON_USER","act":1,"screen_name":"CARD_REWARD","room_phase":"COMPLETE","is_screen_up":true,"potions":[],"current_hp":70,"floor":0,"ascension_level":0,"class":"THE_SILENT","map":[]}}
-    """
-    game_json_reward = json.loads(card_reward_state_json)
-    available_commands_reward = game_json_reward.get("available_commands", [])
-    game_state_data_reward = game_json_reward.get("game_state", {})
-    game_obj_reward = Game.from_json(game_state_data_reward, available_commands_reward)
-
-    # 提取 screen vector
-    screen_vector = game_obj_reward.screen.get_vector()
-    
-    # 手动构建 screen vector 以供对比
-    manual_parts = []
-    
-    card_vectors = [card.get_vector() for card in game_obj_reward.screen.cards[:3]]
-    padded_cards = _pad_vector_list(card_vectors, 3, Card.get_vec_length())
-    manual_parts.append(padded_cards)
-
-    skip_vec = torch.tensor([1.0 if game_obj_reward.screen.can_skip else 0.0], dtype=torch.float32)
-    manual_parts.append(skip_vec)
-
-    content_vec = torch.cat(manual_parts)
-    manual_screen_vector = torch.zeros(Screen.get_vec_length())
-    manual_screen_vector[:content_vec.numel()] = content_vec
-    
-    assert torch.equal(screen_vector, manual_screen_vector), "CardRewardScreen 的向量内容不匹配!"
-    print("✅ CardRewardScreen 的向量化逻辑验证成功！")

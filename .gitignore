@@ -134,3 +134,4 @@ train_log/
 models/
 qvalue_log/
 /high_scores.json
+wandb/

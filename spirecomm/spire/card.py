@@ -1,11 +1,12 @@
 from enum import Enum
+from typing import Tuple
 import torch
 import torch.nn as nn
 
 import xxhash
 import numpy as np
 from dataclasses import dataclass, field
-from spirecomm.utils.data_processing import minmax_normalize, get_hash_val_normalized
+from spirecomm.utils.data_processing import get_hash_id, minmax_normalize, get_hash_val_normalized
 
 MAX_UINT64 = 2**64 - 1
 
@@ -47,47 +48,58 @@ class Card:
     def normalize(self, x, max):
         return x / (max)
     
-    def get_vector(self):
-        """将卡牌属性转换为固定长度的向量表示"""
-        # 1. 连续特征（已归一化）
-        continuous_vec = torch.tensor([
-            self.card_level_normalize_piecewise(self.upgrades),
-            minmax_normalize(self.cost, 0, 10),
-        ], dtype=torch.float32)
+    def get_tensor_data(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        返回适配新架构的 (Embedding_ID, Numeric_Features)
+        """
+        
+        # ==========================================
+        # 1. 生成 ID (用于查万能字典)
+        # ==========================================
+        # 注意：这里 Hash 的是 name,因为choice_list里出现卡牌时，是以name为准的。
+        emb_id = torch.tensor(get_hash_id(self.name), dtype=torch.long)
 
-        # 2. 多类别离散特征（需one-hot编码，类别数≥3）
+        # ==========================================
+        # 2. 生成手工数值特征 (用于拼接)
+        # ==========================================
+        
+        # A. 连续特征
+        # 升级次数
+        upgrade_feat = self.card_level_normalize_piecewise(self.upgrades)
+        # 费用 (归一化)
+        cost_feat = minmax_normalize(self.cost, 0, 5) # 费用很少超过5
+
+        continuous_vec = torch.tensor([upgrade_feat, cost_feat], dtype=torch.float32)
+
+        # B. 离散特征 (One-hot)
+        # 这种显式的类型信息对模型冷启动非常有帮助，补充 Embedding 还没学好的时候
         one_hot_card_type = nn.functional.one_hot(
-            torch.tensor(self.card_type.value - 1, dtype=torch.long),  # 确保long类型
-            num_classes=5
-        ).float()  # 转float与其他向量一致
+            torch.tensor(self.card_type.value - 1, dtype=torch.long),
+            num_classes=len(CardType)
+        ).float()
+        
         one_hot_rarity = nn.functional.one_hot(
             torch.tensor(self.rarity.value - 1, dtype=torch.long),
-            num_classes=6
+            num_classes=len(CardRarity)
         ).float()
 
-        # 3. bool类型特征（1维0/1编码，替代2维one-hot）
+        # C. 布尔特征
         bool_vec = torch.tensor([
-            int(self.has_target),
-            int(self.is_playable),
-            int(self.exhausts)
+            1.0 if self.has_target else 0.0,
+            1.0 if self.is_playable else 0.0,
+            1.0 if self.exhausts else 0.0
         ], dtype=torch.float32)
 
-        # 4. uuid hash特征
-        hash_vec = get_hash_val_normalized(self.uuid)
-
-        # 一次性拼接所有向量（减少重复cat操作，更高效）
-        final_vec = torch.cat([
+        # D. 拼接所有数值特征 (移除了 UUID Hash)
+        # 维度计算: 2 (连续) + 5 (Type) + 6 (Rarity) + 3 (Bool) = 16 维
+        features_vec = torch.cat([
             continuous_vec,
             one_hot_card_type,
             one_hot_rarity,
-            bool_vec,
-            hash_vec
+            bool_vec
         ])
 
-        return final_vec
-    @classmethod
-    def get_vec_length(self):
-        return 17
+        return emb_id, features_vec
     @classmethod
     def from_json(cls, json_object):
         return cls(

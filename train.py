@@ -8,6 +8,8 @@ import sys
 from spirecomm.communication.coordinator import Coordinator
 from spirecomm.spire.character import PlayerClass
 from spirecomm.ai.dqn import DQNAgent
+from spirecomm.ai.dqn_core.wandb_logger import WandbLogger
+from spirecomm.ai.dqn_core.model import SpireConfig
 import os
 import time
 from datetime import datetime
@@ -21,16 +23,16 @@ TRAIN_BATCHES_PER_EPISODE = 64 # 每局游戏结束后，从经验池中采样�
 BATCH_SIZE = 32 # 每次训练时从经验池采样的大小
 
 # 从最新的模型开始训练
-def get_latest_model_agent(player_class: PlayerClass = None) -> Tuple[int,DQNAgent]:
+def get_latest_model_agent(player_class: PlayerClass = None, wandb_logger: WandbLogger = None) -> Tuple[int,DQNAgent]:
     models_dir = os.path.join(get_root_dir(), "models")
     if player_class:
         models_dir = os.path.join(models_dir, player_class.name)
     # 找到数字最大的模型文件,如果没有则返回0和新建的DQNAgent
     if not os.path.exists(models_dir):
-        return 0, DQNAgent()
+        return 0, DQNAgent(wandb_logger=wandb_logger)
     model_files = [f for f in os.listdir(models_dir) if f.startswith("dqn_model_episode_") and f.endswith(".pth")]
     if not model_files:
-        return 0, DQNAgent()
+        return 0, DQNAgent(wandb_logger=wandb_logger)
     latest_episode = 0
     latest_model_path = None
     for f in model_files:
@@ -39,9 +41,9 @@ def get_latest_model_agent(player_class: PlayerClass = None) -> Tuple[int,DQNAge
             latest_episode = episode_num
             latest_model_path = os.path.join(models_dir, f)
     if latest_model_path:
-        return latest_episode, DQNAgent(model_path=latest_model_path)
+        return latest_episode, DQNAgent(model_path=latest_model_path, wandb_logger=wandb_logger)
     else:
-        return 0, DQNAgent()
+        return 0, DQNAgent(wandb_logger=wandb_logger)
 
 def save_model_checkpoint(agent: DQNAgent, models_dir: str, episode: int, latest_episode: int):
     """
@@ -137,11 +139,14 @@ def train_all_classes(agent: DQNAgent = None, num_episodes: int = NUM_EPISODES, 
 
 # --- 1. 初始化 ---
 if __name__ == "__main__":
+    # 初始化 WandbLogger
+    wandb_logger = WandbLogger(project_name="spire-ai-train", run_name=f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+
     # 在这里修改需要训练的角色与参数
     player_class_to_train = PlayerClass.THE_SILENT
     train_single_class_mode = True
     ascension_level_to_train = 20
-    latest_episode, dqn_agent = get_latest_model_agent(player_class_to_train)
+    latest_episode, dqn_agent = get_latest_model_agent(player_class_to_train, wandb_logger=wandb_logger)
 
     # 采用统一的训练入口：按需选择单角色训练或全角色训练
     # 默认行为：训练所有角色

@@ -1,12 +1,12 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import List
+from typing import List, Tuple
 import logging
 
 import torch
 import torch.nn as nn
 from spirecomm.spire.power import Power
-from spirecomm.utils.data_processing import minmax_normalize, get_hash_val_normalized, normal_normalize
+from spirecomm.utils.data_processing import minmax_normalize, get_hash_val_normalized, normal_normalize, norm_linear_clip, norm_log, get_hash_id
 from spirecomm.ai.constants import MAX_ORB_COUNT, MAX_POWER_COUNT
 
 class Intent(Enum):
@@ -56,69 +56,22 @@ class OrbType(Enum):
     FROST = 2
     DARK = 3
     PLASMA = 4
+    EMPTY = 5
 
 class Orb:
 
     def __init__(self, name, orb_id, evoke_amount, passive_amount):
         self.name = name
         self.orb_id = orb_id
-        self.evoke_amount = evoke_amount # 激发
-        self.passive_amount = passive_amount # 被动
-    @classmethod
-    def get_vec_length(self):
-        return 6
-    def get_vector(self):
-        """将球的属性转换为固定长度的向量表示"""
-        # 1. 对 orb_id 进行 one-hot 编码
-        one_hot_id = nn.functional.one_hot(
-            torch.tensor(self.orb_id.value - 1, dtype=torch.long),
-            num_classes=len(OrbType)
-        ).float()
-        # 2. 对 evoke_amount 和 passive_amount 进行归一化
-        normalized_amounts = torch.tensor([
-            normal_normalize(self.evoke_amount, 0, 50),    # 假设最大值为20
-            normal_normalize(self.passive_amount, 0, 20) # 假设最大值为20
-        ], dtype=torch.float32)
-        return torch.cat([one_hot_id, normalized_amounts])
-    @classmethod
-    def from_str_to_type(cls, id_str: str):
-        """
-        将字符串 id 转成 OrbType；遇到 None / 空 / 占位字符串（如 "empty"）或未知 id 时
-        返回 None（上层会忽略该 orb），并写警告日志。
-        """
-        if id_str is None:
-            return None
-        s = str(id_str).strip()
-        if s == "" or s.lower() == "empty":
-            logging.getLogger(__name__).warning("orb id is empty/placeholder: %r", id_str)
-            return None
-        # 允许常见大小写形式直接映射
-        key = s.lower()
-        mapping = {
-            "lightning": OrbType.LIGHTNING,
-            "frost": OrbType.FROST,
-            "dark": OrbType.DARK,
-            "plasma": OrbType.PLASMA
-        }
-        if key in mapping:
-            return mapping[key]
-        # 兼容直接使用枚举名（不区分大小写）
-        try:
-            return OrbType[s.upper()]
-        except Exception:
-            logging.getLogger(__name__).warning("unknown orb id: %r, skipping orb", id_str)
-            return None
+        self.evoke_amount = evoke_amount
+        self.passive_amount = passive_amount
 
     @classmethod
     def from_json(cls, json_object):
-        """从 JSON 构造 Orb；若无法解析 orb_id 返回 None（上层会跳过）。"""
         name = json_object.get("name")
-        orb_id = cls.from_str_to_type(json_object.get("id"))
-        if orb_id is None:
-            # 无效/占位 id，返回 None 以便调用方过滤
-            return None
-        evoke_amount = json_object.get("evoke_amount", 0)
-        passive_amount = json_object.get("passive_amount", 0)
+        orb_id = json_object.get("id")
+        evoke_amount = json_object.get("evoke_amount")
+        passive_amount = json_object.get("passive_amount")
         orb = Orb(name, orb_id, evoke_amount, passive_amount)
         return orb
 
@@ -138,44 +91,91 @@ class Player(Character):
     def __init__(self, max_hp, current_hp=None, block=0, energy=0):
         super().__init__(max_hp, current_hp, block)
         self.energy:int = energy
-        self.orbs = []
+        self.orbs: List[Orb] = []
     @classmethod
     def get_vec_length(cls):
         # block, energy, orbs, powers
         return 1 + 1 + MAX_ORB_COUNT * Orb.get_vec_length() + MAX_POWER_COUNT * Power.get_vec_length()
-    def get_vector(self):
-        """将玩家的属性转换为固定长度的向量表示"""
-        # 1. 归一化 block 和 energy
-        block_tensor = torch.tensor([normal_normalize(self.block, 0, 50)], dtype=torch.float32)
-        energy_tensor = torch.tensor([normal_normalize(self.energy, 0, 5)], dtype=torch.float32)
+    def get_tensor_data(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        numeric_vec: [4] (HP, MaxHP, Block, Energy)
+        power_ids:   [MAX_POWER_COUNT]
+        power_feats:  [MAX_POWER_COUNT]
+        orb_ids:     [MAX_ORB_COUNT]
+        orb_vals:    [MAX_ORB_COUNT, 2] (Evoke, Passive)
+        """
+            
+        # ==========================================
+        # 1. 数值特征 (Numeric)
+        # ==========================================
+        # 目标：生成 [current_hp, max_hp, hp_ratio, block, energy]
+        hp_ratio = self.current_hp / (self.max_hp + 1e-5)
+        numeric_vec = torch.tensor([
+            norm_linear_clip(self.current_hp, 100.0),
+            norm_linear_clip(self.max_hp, 100.0),
+            hp_ratio,
+            norm_linear_clip(self.block, 50.0),
+            norm_linear_clip(self.energy, 5.0)
+        ], dtype=torch.float32)
+        # ==========================================
+        # 2. 能力特征 (Powers)
+        # ==========================================
+        # 目标：生成 [MAX_POWER_COUNT] 的 ID 和 特征
+        power_ids = torch.zeros(MAX_POWER_COUNT, dtype=torch.long)
+        power_feats = torch.zeros((MAX_POWER_COUNT, 3), dtype=torch.float32) 
+        
+        current_powers = self.powers if self.powers else []
+        for i, p in enumerate(current_powers[:MAX_POWER_COUNT]):
+            power_ids[i] = get_hash_id(p.power_id)
+            power_feats[i, 0] = norm_log(p.amount, 20.0)
+            power_feats[i, 1] = norm_log(p.damage, 20.0) 
+            power_feats[i, 2] = 1.0 if p.just_applied else 0.0
 
-        # 2. 处理充能球(orbs)，并填充到 MAX_ORB_COUNT
-        orb_vectors = [orb.get_vector() for orb in self.orbs]
-        # 如果有充能球，将它们堆叠成一个2D张量
-        if orb_vectors:
-            orbs_tensor = torch.stack(orb_vectors)
-        else:
-            # 如果没有，创建一个空的2D张量以便后续填充
-            orbs_tensor = torch.empty(0, Orb.get_vec_length())
-        # 计算需要填充的零向量数量，并创建填充张量
-        orb_padding_count = MAX_ORB_COUNT - len(orb_vectors)
-        orb_padding = torch.zeros(orb_padding_count, Orb.get_vec_length())
-        # 拼接并展平为1D向量
-        orbs_tensor = torch.cat([orbs_tensor, orb_padding], dim=0).flatten()
+        # ==========================================
+        # 3. 充能球特征 (Orbs)
+        # ==========================================
+        # 目标：生成 [MAX_ORB_COUNT] 的 ID 和 数值
+        orb_ids = torch.zeros(MAX_ORB_COUNT, dtype=torch.long)
+        orb_vals = torch.zeros((MAX_ORB_COUNT, 2), dtype=torch.float32) # [Evoke, Passive]
 
-        # 3. 处理能力(powers)，并填充到 MAX_POWER_COUNT (逻辑与orbs类似)
-        power_vectors = [power.get_vector() for power in self.powers]
-        if power_vectors:
-            powers_tensor = torch.stack(power_vectors)
-        else:
-            powers_tensor = torch.empty(0, Power.get_vec_length())
-        power_padding_count = MAX_POWER_COUNT - len(power_vectors)
-        power_padding = torch.zeros(power_padding_count, Power.get_vec_length())
-        powers_tensor = torch.cat([powers_tensor, power_padding], dim=0).flatten()
-
-        # 4. 拼接所有特征向量
-        return torch.cat([block_tensor, energy_tensor, orbs_tensor, powers_tensor])
-
+        current_orbs = self.orbs if self.orbs else []
+        
+        # 我们遍历固定的 MAX_ORB_COUNT 长度
+        for i in range(MAX_ORB_COUNT):
+            if i < len(current_orbs):
+                # --- 情况 A: 列表内的球（可能是真球，也可能是空槽位）---
+                orb = current_orbs[i]
+                
+                # 安全获取属性（防止 None）
+                o_name = str(orb.name) if orb.name else ""
+                o_id = str(orb.orb_id) if orb.orb_id else ""
+                
+                # 判断逻辑：根据名字或ID判断是否为空槽位
+                # 游戏通常返回 name="充能球栏位" 或 id="Empty"
+                if "充能球栏位" in o_name or "Empty" in o_id:
+                    # 这是一个可用的空位
+                    orb_ids[i] = get_hash_id("OrbSlot_Empty")
+                    # 数值保持为 0
+                elif o_id:
+                    # 这是一个真的球 (Lightning, Frost, Dark, Plasma...)
+                    # 直接 Hash 它的 ID 字符串
+                    orb_ids[i] = get_hash_id(o_id)
+                    
+                    # 归一化数值 (Dark球的evoke可能会很高，上限设大点)
+                    orb_vals[i, 0] = norm_log(orb.evoke_amount, 60.0)
+                    orb_vals[i, 1] = norm_log(orb.passive_amount, 30.0)
+                else:
+                    # 数据异常，视作 Padding
+                    pass
+            else:
+                # --- 情况 B: 列表外的部分（超过当前球位上限）---
+                # 比如上限3个球，i=3,4...9 就是这种情况
+                # 保持 orb_ids[i] = 0 (Padding)
+                # 模型会学到：ID=0 的位置是无法生成球的
+                pass
+        
+        return numeric_vec, power_ids, power_feats, orb_ids, orb_vals
+    
     @classmethod
     def from_json(cls, json_object):
         player = cls(json_object["max_hp"], json_object["current_hp"], json_object["block"], json_object["energy"])
@@ -251,6 +251,83 @@ class Monster(Character):
         ])
 
         return final_vec
+    
+    def get_tensor_data(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        返回 Monster 的结构化 Tensor 数据。
+        
+        Returns:
+            numeric_vec: [N] (HP, Block, Damage, Hits, Is_Attack...)
+            identity_id: [1] (Name+ID Hash，代表“我是哪只怪”)
+            intent_id:   [1] (Intent Name Hash，代表“我这回合想干嘛”)
+            power_ids:   [MAX_POWERS]
+            power_feats: [MAX_POWERS, 3]
+        """
+        
+        # ---------------------------------------------------
+        # 1. 身份 ID (Identity)
+        # ---------------------------------------------------
+        # 结合 Name 和 ID，区分同名怪
+        unique_name = f"{self.name}_{self.monster_id}"
+        identity_id = torch.tensor([get_hash_id(unique_name)], dtype=torch.long)
+
+        # ---------------------------------------------------
+        # 2. 意图 ID (Intent)
+        # ---------------------------------------------------
+        # 将 Intent 枚举的名字 (如 "ATTACK_BUFF") 映射为 ID
+        # 这样模型可以通过 Embedding 理解意图的类型
+        intent_str = self.intent.name if self.intent else "UNKNOWN"
+        intent_id = torch.tensor([get_hash_id(intent_str)], dtype=torch.long)
+
+        # ---------------------------------------------------
+        # 3. 数值特征 (Numeric)
+        # ---------------------------------------------------
+        hp_ratio = self.current_hp / (self.max_hp + 1e-5)
+        
+        # 提取伤害数值
+        # 注意：如果意图不是攻击，damage 通常为 0，这很好，反映了真实情况
+        base_dmg = self.move_base_damage if self.move_base_damage else 0
+        adj_dmg = self.move_adjusted_damage if self.move_adjusted_damage else 0
+        hits = self.move_hits if self.move_hits else 0
+        
+        # 提取是否攻击 (Boolean)
+        # 利用 Enum 里的辅助函数
+        is_attacking = 1.0 if (self.intent and self.intent.is_attack()) else 0.0
+
+        numeric_vec = torch.tensor([
+            # 生存属性
+            norm_linear_clip(self.current_hp, 300.0),
+            norm_linear_clip(self.max_hp, 300.0),
+            hp_ratio,
+            norm_linear_clip(self.block, 80.0),
+            
+            # 攻击属性 (关键！)
+            norm_log(adj_dmg, 60.0),      # 调整后伤害 (Log归一化)
+            norm_linear_clip(hits, 15.0), # 攻击段数
+            is_attacking,                 # 是否攻击标志位
+            
+            # 状态位
+            1.0 if self.half_dead else 0.0, # 觉醒者/心脏等复活怪
+            1.0 if self.is_gone else 0.0
+        ], dtype=torch.float32)
+
+        # ---------------------------------------------------
+        # 4. 能力特征 (Powers)
+        # ---------------------------------------------------
+        power_ids = torch.zeros(MAX_POWER_COUNT, dtype=torch.long)
+        power_feats = torch.zeros((MAX_POWER_COUNT, 3), dtype=torch.float32) # [层数, 伤害, 刚施加]
+        
+        current_powers = self.powers if self.powers else []
+        for i, p in enumerate(current_powers[:MAX_POWER_COUNT]):
+            power_ids[i] = get_hash_id(p.power_id)
+            
+            # 细分 Power 特征
+            power_feats[i, 0] = norm_log(p.amount, 20.0)      # 层数
+            power_feats[i, 1] = norm_log(p.damage, 20.0)      # 伤害 (如中毒/荆棘)
+            power_feats[i, 2] = 1.0 if p.just_applied else 0.0 # 刚施加
+            
+        return numeric_vec, identity_id, intent_id, power_ids, power_feats
+    
     @classmethod
     def from_json(cls, json_object):
         name = json_object["name"]

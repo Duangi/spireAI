@@ -2,6 +2,29 @@ import torch
 import xxhash
 import math
 from typing import Union
+
+from spirecomm.ai.constants import MAX_VOCAB_SIZE
+
+# 全局反向查找表，用于将 Hash ID 还原为文本
+ID_TO_TEXT = {0: "<PAD>"}
+
+def get_hash_id(text: str) -> int:
+    """
+    将字符串映射为 1 ~ 4999 的整数 ID。
+    0 留给 Padding。
+    同时更新全局 ID_TO_TEXT 字典。
+    """
+    if not text:
+        return 0
+    # 使用 xxhash 保证碰撞率低且速度快
+    raw_hash = xxhash.xxh64(text.encode('utf-8')).intdigest()
+    idx = (raw_hash % (MAX_VOCAB_SIZE - 1)) + 1
+    
+    # 记录反向映射 (如果发生碰撞，后来的会覆盖前面的，但在调试场景下通常可接受)
+    if idx not in ID_TO_TEXT:
+        ID_TO_TEXT[idx] = text
+        
+    return idx
 def minmax_normalize(
         x: Union[float, int],
         min_val: Union[float, int],
@@ -45,6 +68,42 @@ def get_hash_val_normalized(input_str: str) -> torch.Tensor:
     hash_value = xxhash.xxh64(data).intdigest()
     normalized_hash = hash_value / MAX_UINT64
     return torch.tensor(normalized_hash, dtype=torch.float32).unsqueeze(0)
+def norm_linear_clip(x:float, max_val:float) -> float:
+    """
+    线性截断归一化 (Linear Clipping)
+    适用：HP、层数、回合数。
+    特点：保留线性关系（50血是25血的两倍好），超过 max_val 的都被视为 1.0。
+    """
+    if x is None:
+        return 0.0
+    
+    return min(max(x, 0.0), max_val) / max_val
+
+def norm_log(x: float, max_ref: float) -> float:
+    """
+    对数归一化 (Log Scale) - 直观版
+    
+    参数:
+        x: 当前数值
+        max_ref: 预期的“大数值”界限（例如金币填3000，伤害填50）
+                 当 x = max_ref 时，返回值为 1.0。
+                 当 x 超出 max_ref 时，返回值会平滑地超过 1.0 (不会报错)。
+    """
+    if x is None: return 0.0
+    
+    # 核心公式: log(current + 1) / log(max + 1)
+    # 这样就不用你去算 log(3000) 等于多少了
+    # max(max_ref, 1.0) 是为了防止分母为0
+    return math.log1p(max(x, 0.0)) / math.log1p(max(max_ref, 1.0))
+
+def norm_ratio(current: float, maximum: float) -> float:
+    """
+    比率归一化 (Ratio)
+    适用：当前HP/最大HP，当前能量/最大能量。
+    特点：直接反映“我还有多少状态”。
+    """
+    if maximum is None or maximum <= 0: return 0.0
+    return max(current, 0.0) / maximum
 
 def _pad_vector_list(vec_list, max_n, vec_size=None, default_size=0):
     """Flatten and concatenate vectors in vec_list and pad to max_n * vec_size.

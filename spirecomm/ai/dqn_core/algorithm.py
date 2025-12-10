@@ -1,4 +1,5 @@
 from calendar import c
+from dataclasses import fields
 import random
 from collections import deque
 from re import purge
@@ -13,13 +14,349 @@ import datetime
 
 from spirecomm.ai.absolute_logger import AbsoluteLogger, LogType
 from spirecomm.ai.dqn_core.action import BaseAction, DecomposedActionType, PlayAction, ChooseAction, PotionDiscardAction, PotionUseAction, SingleAction, ActionType
-from spirecomm.ai.dqn_core.model import DQNModel
+from spirecomm.ai.dqn_core.model import DQNModel, SpireConfig, SpireDQN, SpireOutput, SpireState
 from spirecomm.ai.dqn_core.state import GameStateProcessor
 from spirecomm.spire.card import Card
 from spirecomm.spire.game import Game
 from spirecomm.spire.potion import Potion
 from spirecomm.spire.relic import Relic
 from spirecomm.spire.screen import ScreenType, ShopScreen
+from spirecomm.ai.dqn_core.wandb_logger import WandbLogger
+
+class SpireAgent:
+    def __init__(self, config: SpireConfig, device="cuda" if torch.cuda.is_available() else "cpu", wandb_logger: WandbLogger = None):
+        self.cfg = config
+        self.device = device
+        self.wandb_logger = wandb_logger
+        self.last_q_values = {}
+        self.total_steps = 0
+        
+        # --- 模型初始化 ---
+        self.policy_net = SpireDQN(config).to(device)
+        self.target_net = SpireDQN(config).to(device)
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.target_net.eval()
+        
+        # --- 优化器与损失 ---
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=1e-4)
+        # Huber Loss 对异常值（比如突然爆发的伤害数值）更稳健
+        self.loss_fn = nn.SmoothL1Loss() 
+        
+        # --- 经验回放 ---
+        # 存储格式: (state: SpireState, action: object, reward: float, next_state: SpireState, done: bool)
+        self.memory = deque(maxlen=5000) 
+        
+        # --- 训练超参数 ---
+        self.batch_size = 32
+        self.gamma = 0.99
+        self.temperature = 2.0
+        self.temperature_min = 0.1
+        self.temperature_decay = 0.9995
+        self.is_training = True
+
+    def save_model(self, path):
+        torch.save({
+            'model': self.policy_net.state_dict(),
+            'optimizer': self.optimizer.state_dict(),
+            'config': self.cfg
+        }, path)
+
+    def load_model(self, path):
+        if os.path.exists(path):
+            checkpoint = torch.load(path, map_location=self.device)
+            self.policy_net.load_state_dict(checkpoint['model'])
+            self.target_net.load_state_dict(checkpoint['model'])
+            self.optimizer.load_state_dict(checkpoint['optimizer'])
+            print(f"Model loaded from {path}")
+
+    # ==========================================
+    # 1. 核心数据处理: Collate (打包)
+    # ==========================================
+    def collate_states(self, states: list[SpireState]) -> SpireState:
+        """
+        将 List[SpireState] (长度=Batch) 转换为 一个 SpireState (Tensor维度增加Batch维)
+        例如: 32 个 [10, 128] 的 hand_vec -> 1 个 [32, 10, 128] 的 hand_vec
+        """
+        # 动态获取 SpireState 的所有字段名
+        field_names = [f.name for f in fields(SpireState)]
+        
+        batched_data = {}
+        for name in field_names:
+            # 提取 list 中每个 state 的对应字段
+            tensors = [getattr(s, name) for s in states]
+            
+            # 堆叠 (Stack)
+            # 注意: 所有输入 Tensor 必须在 CPU 上，这一步还没进 GPU
+            batched_tensor = torch.stack(tensors, dim=0) 
+            batched_data[name] = batched_tensor
+            
+        # 返回一个新的 SpireState 对象
+        return SpireState(**batched_data)
+
+    def to_device(self, state: SpireState) -> SpireState:
+        """将 SpireState 中的所有 Tensor 移动到 GPU"""
+        new_data = {}
+        for name in [f.name for f in fields(SpireState)]:
+            val = getattr(state, name)
+            if isinstance(val, torch.Tensor):
+                new_data[name] = val.to(self.device)
+        return SpireState(**new_data)
+
+    # ==========================================
+    # 2. 经验存取
+    # ==========================================
+    def remember(self, state: SpireState, action, reward, next_state: SpireState, done: bool, reward_details: str = ""):
+        """
+        存入经验池。
+        注意：存入前不要 to(device)，保持在 CPU 上以节省显存。
+        """
+        # 这里的 state 应该是单个对象的 SpireState (非 Batch)
+        self.memory.append((state, action, reward, next_state, done))
+        self.total_steps += 1
+        
+        if self.wandb_logger:
+            try:
+                # Format action string if it's an object
+                if hasattr(action, 'to_string'):
+                    action_desc = action.to_string()
+                elif isinstance(action, str):
+                    action_desc = action
+                else:
+                    action_desc = str(action)
+
+                self.wandb_logger.log_step(
+                    step_count=self.total_steps,
+                    state=state,
+                    action_desc=action_desc,
+                    q_values=self.last_q_values,
+                    reward=reward,
+                    reward_details=reward_details
+                )
+                if done:
+                    self.wandb_logger.commit_table()
+            except Exception as e:
+                print(f"Wandb logging failed: {e}")
+
+    # ==========================================
+    # 3. 训练循环
+    # ==========================================
+    def train(self):
+        if len(self.memory) < self.batch_size:
+            return
+
+        # 1. 采样
+        minibatch = random.sample(self.memory, self.batch_size)
+        
+        # 解压
+        state_list = [x[0] for x in minibatch]
+        action_list = [x[1] for x in minibatch]
+        reward_list = [x[2] for x in minibatch]
+        next_state_list = [x[3] for x in minibatch]
+        done_list = [x[4] for x in minibatch]
+
+        # 2. 打包并移动到 GPU
+        batch_state = self.to_device(self.collate_states(state_list))
+        batch_next_state = self.to_device(self.collate_states(next_state_list))
+        
+        batch_rewards = torch.tensor(reward_list, device=self.device, dtype=torch.float32)
+        batch_dones = torch.tensor(done_list, device=self.device, dtype=torch.float32)
+
+        # 3. 计算当前 Q 值 (Predicted Q)
+        # Forward pass
+        output: SpireOutput = self.policy_net(batch_state)
+        
+        # 提取对应动作的 Q 值
+        pred_q_values = []
+        
+        for i, action in enumerate(action_list):
+            # 获取 Action Type 的索引 (int)
+            # 假设 action 有 decomposed_type 属性
+            act_idx = action.decomposed_type.value 
+            
+            # 基础 Q 值 (Action Type Q)
+            q_val = output.q_action_type[i, act_idx]
+            
+            # 加上分支 Q 值 (Argument Q)
+            if isinstance(action, PlayAction):
+                # play_card: [Batch, 10] -> 取第 i 个样本的第 hand_idx 张牌
+                # 确保索引在合法范围内
+                hand_idx = min(action.hand_idx, 9) # MAX_HAND_SIZE-1
+                q_val += output.q_play_card[i, hand_idx]
+                if action.target_idx is not None:
+                    target_idx = min(action.target_idx, 4) # MAX_MONSTER_COUNT-1
+                    q_val += output.q_target_monster[i, target_idx]
+                    
+            elif isinstance(action, ChooseAction):
+                # 确保索引在合法范围内
+                choice_idx = min(action.choice_idx, 14) # MAX_CHOICE_LIST-1
+                q_val += output.q_choose_option[i, choice_idx]
+                
+            elif isinstance(action, PotionUseAction):
+                pot_idx = min(action.potion_idx, 4) # MAX_POTION_COUNT-1
+                q_val += output.q_potion_use[i, pot_idx]
+                if action.target_idx is not None:
+                    target_idx = min(action.target_idx, 4)
+                    q_val += output.q_target_monster[i, target_idx]
+            
+            elif isinstance(action, PotionDiscardAction):
+                pot_idx = min(action.potion_idx, 4)
+                q_val += output.q_potion_discard[i, pot_idx]
+                
+            pred_q_values.append(q_val)
+            
+        # 堆叠成 Tensor [Batch]
+        pred_q_tensor = torch.stack(pred_q_values)
+
+        # 4. 计算目标 Q 值 (Target Q)
+        with torch.no_grad():
+            next_output: SpireOutput = self.target_net(batch_next_state)
+            
+            # 简化策略：Double DQN 或直接 Max
+            # 这里取 Next Action Type 的最大值作为估计
+            # 改进方向：应该取 Max(ActionType + Max(Branch))，但这计算比较复杂
+            # 目前 heuristic: Max Action Type Q 已经能提供足够的梯度方向
+            max_next_q, _ = next_output.q_action_type.max(dim=1)
+            
+            target_q_tensor = batch_rewards + (1 - batch_dones) * self.gamma * max_next_q
+
+        # 5. 反向传播
+        loss = self.loss_fn(pred_q_tensor, target_q_tensor)
+        
+        self.optimizer.zero_grad()
+        loss.backward()
+        # 梯度裁剪防止梯度爆炸 (Transformer/LSTM常用)
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
+        self.optimizer.step()
+
+        if self.wandb_logger:
+            self.wandb_logger.log_metrics(
+                {
+                    "loss": loss.item(),
+                    "avg_q_value": pred_q_tensor.mean().item(),
+                    "temperature": self.temperature
+                },
+                step=self.total_steps
+            )
+
+        # 6. 更新温度
+        if self.temperature > self.temperature_min:
+            self.temperature *= self.temperature_decay
+
+    def update_target_net(self):
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+
+    # ==========================================
+    # 4. 动作选择 (Inference)
+    # ==========================================
+    def choose_action(self, state: SpireState, game_state_obj):
+        """
+        state: 单个 SpireState (CPU)
+        game_state_obj: 原始 Game 对象 (用于逻辑校验/掩码处理)
+        """
+        # 1. 增加 Batch 维度并移至 GPU
+        # collate_states([state]) -> [1, ...]
+        batch_state = self.to_device(self.collate_states([state]))
+        
+        with torch.no_grad():
+            output: SpireOutput = self.policy_net(batch_state)
+        
+        # 提取 Batch 0 的结果
+        q_type = output.q_action_type[0]      # [Num_Types]
+        q_card = output.q_play_card[0]        # [10]
+        q_monster = output.q_target_monster[0]# [5]
+        q_choice = output.q_choose_option[0]  # [15]
+        q_pot_use = output.q_potion_use[0]    # [5]
+        q_pot_disc = output.q_potion_discard[0] # [5]
+
+        # --- Wandb Logging: Store Q-values ---
+        self.last_q_values = {}
+        for i, q in enumerate(q_type):
+            try:
+                t_name = DecomposedActionType(i).name
+            except:
+                t_name = str(i)
+            self.last_q_values[f"{t_name}"] = q.item()
+        # -------------------------------------
+
+        # 应用 Mask (你的旧逻辑里有 mask 字典，这里假设 action_mask 已经在 SpireState 里处理了一部分)
+        # 如果需要更细致的逻辑 mask，可以像你旧代码那样处理
+        # 例如: q_type[~type_mask] = -inf
+        
+        # --- 动作类型选择 ---
+        if self.is_training:
+            probs = torch.softmax(q_type / self.temperature, dim=-1)
+            act_idx = torch.multinomial(probs, 1).item()
+        else:
+            act_idx = torch.argmax(q_type).item()
+            
+        action_type = DecomposedActionType(act_idx)
+        
+        # --- 分支参数选择 ---
+        # 辅助函数: 根据温度采样
+        def select_idx(q_vals, count_limit):
+            # 简单截断有效范围 (比如手牌只有 5 张，q_card[5:] 应该是无效的/mask掉的)
+            valid_q = q_vals[:count_limit] 
+            if self.is_training:
+                p = torch.softmax(valid_q / self.temperature, dim=-1)
+                return torch.multinomial(p, 1).item()
+            else:
+                return torch.argmax(valid_q).item()
+
+        # 根据类型组装 Action 对象
+        if action_type == DecomposedActionType.PLAY:
+            # Log Card Q-values
+            for i, card in enumerate(game_state_obj.hand):
+                if i < 10:
+                    self.last_q_values[f"Card:{card.name}"] = q_card[i].item()
+            hand_idx = select_idx(q_card, len(game_state_obj.hand))
+            
+            target_idx = None
+            # 判断是否需要目标 (逻辑复用你之前的)
+            card = game_state_obj.hand[hand_idx]
+            if card.has_target:
+                target_idx = select_idx(q_monster, len(game_state_obj.monsters))
+                
+            return PlayAction(ActionType.PLAY, hand_idx, target_idx)
+            
+        elif action_type == DecomposedActionType.CHOOSE:
+            # Log Choice Q-values
+            if hasattr(game_state_obj, 'choice_list') and game_state_obj.choice_list:
+                for i, choice in enumerate(game_state_obj.choice_list):
+                    if i < 15:
+                        self.last_q_values[f"Ch:{choice}"] = q_choice[i].item()
+
+            # 检查是否是 Shop 进入逻辑 (你之前的逻辑)
+            # ... (复用你的 visited_shop 逻辑) ...
+            
+            # 安全检查：确保 choice_list 存在且不为空
+            if not hasattr(game_state_obj, 'choice_list') or not game_state_obj.choice_list:
+                # 如果没有选项，回退到 PROCEED (通常在事件或商店离开时)
+                from spirecomm.ai.dqn_core.action import SingleAction
+                return SingleAction(type=ActionType.PROCEED, decomposed_type=DecomposedActionType.PROCEED)
+
+            choice_idx = select_idx(q_choice, len(game_state_obj.choice_list))
+            return ChooseAction(ActionType.CHOOSE, choice_idx)
+            
+        elif action_type == DecomposedActionType.POTION_USE:
+            # Log Potion Q-values
+            for i, potion in enumerate(game_state_obj.potions):
+                if i < 5:
+                    self.last_q_values[f"Pot:{potion.name}"] = q_pot_use[i].item()
+            pot_idx = select_idx(q_pot_use, len(game_state_obj.potions))
+            target_idx = None
+            if game_state_obj.potions[pot_idx].requires_target:
+                target_idx = select_idx(q_monster, len(game_state_obj.monsters))
+            return PotionUseAction(ActionType.POTION_USE, pot_idx, target_idx)
+            
+        elif action_type == DecomposedActionType.POTION_DISCARD:
+            pot_idx = select_idx(q_pot_disc, len(game_state_obj.potions))
+            return PotionDiscardAction(ActionType.POTION_DISCARD, pot_idx)
+            
+        else:
+            # End, Proceed, etc.
+            base_type = action_type.to_action_type()
+            from spirecomm.ai.dqn_core.action import SingleAction
+            return SingleAction(base_type, decomposed_type=action_type)
 
 class DQN:
     def __init__(self, state_size, state_processor:GameStateProcessor):
@@ -199,6 +536,13 @@ class DQN:
                 "target_q_values": target_q_values.detach().cpu().numpy().tolist(),
                 "all_action_q_values": all_q_values.tolist()
             })
+            
+            if self.wandb_logger:
+                self.wandb_logger.log_metrics({
+                    "train/loss": loss.item(),
+                    "train/avg_q": predicted_q_values.mean().item(),
+                    "train/epsilon": self.temperature # Assuming temperature is used for exploration
+                })
         except Exception:
             pass
         # 梯度清零
@@ -226,6 +570,24 @@ class DQN:
         """
         action_type_q, arg_q = self.get_q_values(state_tensor, use_policy_net=True)
 
+        # --- Wandb Logging Prep ---
+        if self.wandb_logger:
+            try:
+                # Store top 3 action types
+                at_q = action_type_q.squeeze(0).detach().cpu().numpy()
+                # Filter out -inf
+                valid_indices = np.where(at_q > -1e9)[0]
+                if len(valid_indices) > 0:
+                    sorted_indices = valid_indices[np.argsort(at_q[valid_indices])][-3:][::-1]
+                    self.last_q_values = {
+                        DecomposedActionType(i).name: float(at_q[i]) 
+                        for i in sorted_indices
+                    }
+                else:
+                    self.last_q_values = {}
+            except Exception:
+                self.last_q_values = {}
+
         # 1. 决策第一步：选择动作类型 (Action Type)
         action_type_q = action_type_q.squeeze(0) # 移除 batch 维度
         action_type_mask = torch.from_numpy(masks['action_type']).bool()
@@ -235,7 +597,16 @@ class DQN:
         
         # 如果所有动作类型都被屏蔽了
         if not action_type_mask.any():
-            raise ValueError("所有动作类型均被屏蔽，无法选择动作。")
+            # 这种情况通常不应该发生，但为了防止崩溃，返回 END 或 PROCEED
+            # print("Warning: All actions masked. Defaulting to END/PROCEED.")
+            from spirecomm.ai.dqn_core.action import SingleAction
+            if 'end' in game_state.available_commands:
+                return SingleAction(type=ActionType.END, decomposed_type=DecomposedActionType.END)
+            elif 'proceed' in game_state.available_commands or 'confirm' in game_state.available_commands:
+                return SingleAction(type=ActionType.PROCEED, decomposed_type=DecomposedActionType.PROCEED)
+            else:
+                # 实在没办法，随便返回一个 END，让游戏逻辑去处理无效操作
+                return SingleAction(type=ActionType.END, decomposed_type=DecomposedActionType.END)
         
         # 判断药水是否满了
         # 如果状态里面的choice_list有potion字段的话，把对应的index选出来，mask置为false，满了选不了药水
@@ -288,6 +659,12 @@ class DQN:
             # 需要选择打哪张牌 (play_card) 和目标 (target_monster)
             play_card_q = arg_q['play_card'].squeeze(0)
             play_card_mask = torch.from_numpy(masks['play_card']).bool()
+            
+            # 安全检查：如果 mask 全为 False，说明没有牌可打，回退到 END
+            if not play_card_mask.any():
+                from spirecomm.ai.dqn_core.action import SingleAction
+                return SingleAction(type=ActionType.END, decomposed_type=DecomposedActionType.END)
+
             play_card_q[~play_card_mask] = -float('inf')
             if self.is_training:
                 play_card_probs = torch.softmax(play_card_q / self.temperature, dim=-1)
@@ -301,12 +678,19 @@ class DQN:
             if chosen_card.has_target:
                 target_q = arg_q['target_monster'].squeeze(0)
                 target_mask = torch.from_numpy(masks['target_monster']).bool()
-                target_q[~target_mask] = -float('inf')
-                if self.is_training:
-                    target_probs = torch.softmax(target_q / self.temperature, dim=-1)
-                    target_idx = torch.multinomial(target_probs, 1).item()
+                
+                # 安全检查：如果需要目标但没有合法目标
+                if not target_mask.any():
+                     # 这种情况很罕见（有目标牌但无目标怪？），可能怪全死了？
+                     # 简单处理：不选目标，或者回退
+                     target_idx = None
                 else:
-                    target_idx = torch.argmax(target_q).item()
+                    target_q[~target_mask] = -float('inf')
+                    if self.is_training:
+                        target_probs = torch.softmax(target_q / self.temperature, dim=-1)
+                        target_idx = torch.multinomial(target_probs, 1).item()
+                    else:
+                        target_idx = torch.argmax(target_q).item()
 
             # 如果目标掩码全为False，说明该牌无需目标
             if not np.any(masks['target_monster']):
@@ -327,10 +711,22 @@ class DQN:
                 else:
                     # 来过了的话，proceed 继续，然后后续必须立马往前进 TODO，否则再选到return的话，就在商店门口死循环了。
                     self.visited_shop = False
+                    from spirecomm.ai.dqn_core.action import SingleAction
                     return SingleAction(type=ActionType.PROCEED, decomposed_type=ActionType.PROCEED)
             
+            # 安全检查：确保 choice_list 存在且不为空
+            if not hasattr(game_state, 'choice_list') or not game_state.choice_list:
+                from spirecomm.ai.dqn_core.action import SingleAction
+                return SingleAction(type=ActionType.PROCEED, decomposed_type=DecomposedActionType.PROCEED)
+
             choose_q = arg_q['choose_option'].squeeze(0)
             choose_mask = torch.from_numpy(masks['choose_option']).bool()
+            
+            # 安全检查
+            if not choose_mask.any():
+                 from spirecomm.ai.dqn_core.action import SingleAction
+                 return SingleAction(type=ActionType.PROCEED, decomposed_type=DecomposedActionType.PROCEED)
+
             choose_q[~choose_mask] = -float('inf')
             if self.is_training:
                 choose_probs = torch.softmax(choose_q / self.temperature, dim=-1)
@@ -344,6 +740,12 @@ class DQN:
             # 使用专门的 potion_use 头与掩码；向后兼容仍可接受旧的 'potion'
             potion_q = arg_q.get('potion_use').squeeze(0)
             potion_mask = torch.from_numpy(masks.get('potion_use')).bool()
+            
+            # 安全检查
+            if not potion_mask.any():
+                 from spirecomm.ai.dqn_core.action import SingleAction
+                 return SingleAction(type=ActionType.END, decomposed_type=DecomposedActionType.END)
+
             potion_q[~potion_mask] = -float('inf')
             if self.is_training:
                 potion_probs = torch.softmax(potion_q / self.temperature, dim=-1)
@@ -357,12 +759,16 @@ class DQN:
             if chosen_potion.requires_target:
                 target_q = arg_q['target_monster'].squeeze(0)
                 target_mask = torch.from_numpy(masks['target_monster']).bool()
-                target_q[~target_mask] = -float('inf')
-                if self.is_training:
-                    target_probs = torch.softmax(target_q / self.temperature, dim=-1)
-                    target_idx = torch.multinomial(target_probs, 1).item()
+                
+                if not target_mask.any():
+                    target_idx = None
                 else:
-                    target_idx = torch.argmax(target_q).item()
+                    target_q[~target_mask] = -float('inf')
+                    if self.is_training:
+                        target_probs = torch.softmax(target_q / self.temperature, dim=-1)
+                        target_idx = torch.multinomial(target_probs, 1).item()
+                    else:
+                        target_idx = torch.argmax(target_q).item()
             
             return PotionUseAction(type=ActionType.POTION_USE, potion_idx=potion_idx, target_idx=target_idx)
         
@@ -370,6 +776,12 @@ class DQN:
             # 需要选择丢弃哪个药水
             potion_q = arg_q['potion_discard'].squeeze(0)
             potion_mask = torch.from_numpy(masks.get('potion_discard')).bool()
+            
+            # 安全检查
+            if not potion_mask.any():
+                 from spirecomm.ai.dqn_core.action import SingleAction
+                 return SingleAction(type=ActionType.END, decomposed_type=DecomposedActionType.END)
+
             potion_q[~potion_mask] = -float('inf')
             if self.is_training:
                 potion_probs = torch.softmax(potion_q / self.temperature, dim=-1)

@@ -1,4 +1,5 @@
-from spirecomm.ai.dqn_core.algorithm import DQN
+from spirecomm.ai.dqn_core.algorithm import SpireAgent
+from spirecomm.ai.dqn_core.model import SpireConfig
 from spirecomm.ai.dqn_core.state import GameStateProcessor
 from spirecomm.ai.dqn_core.reward import RewardCalculator
 from spirecomm.communication.action import StartGameAction
@@ -7,6 +8,7 @@ from spirecomm.spire.character import PlayerClass
 from spirecomm.spire.game import Game
 from spirecomm.ai.tests.test_case.game_state_test_cases import test_cases
 from spirecomm.ai.dqn_core.action import DecomposedActionType
+from spirecomm.ai.dqn_core.wandb_logger import WandbLogger
 import torch
 
 
@@ -16,14 +18,16 @@ class DQNAgent:
     这个类是与spirecomm协调器直接交互的接口。
     """
 
-    def __init__(self, play_mode=False, model_path=None):
+    def __init__(self, play_mode=False, model_path=None, wandb_logger: WandbLogger = None):
         self.play_mode = play_mode
         # 1. 初始化核心组件
         self.state_processor = GameStateProcessor()
         self.reward_calculator = RewardCalculator()
 
-        state_size = 10459  # 备用硬编码值
-        self.dqn_algorithm = DQN(int(state_size), self.state_processor)
+        # 初始化配置
+        config = SpireConfig()
+        # 初始化 SpireAgent
+        self.dqn_algorithm = SpireAgent(config, wandb_logger=wandb_logger)
 
         if self.play_mode:
             self.dqn_algorithm.set_inference_mode()
@@ -55,29 +59,30 @@ class DQNAgent:
         if not self.play_mode:
             if self.previous_game_state is not None and self.previous_action is not None:
                 # a. 计算奖励
-                reward = self.reward_calculator.calculate(self.previous_game_state, game_state, self.previous_action, self.previous_prev_state)
+                reward, reward_details = self.reward_calculator.calculate(self.previous_game_state, game_state, self.previous_action, self.previous_prev_state)
                 
                 # b. 处理新状态
-                next_state_tensor = self.state_processor.process(game_state)
+                next_state_tensor = self.state_processor.get_state_tensor(game_state)
                 # game_state 是 Game 对象，直接访问属性
                 done = not game_state.in_game
                 
                 # c. 记忆经验
-                self.dqn_algorithm.remember(self.previous_state_tensor, self.previous_action, reward, next_state_tensor, done)
+                self.dqn_algorithm.remember(self.previous_state_tensor, self.previous_action, reward, next_state_tensor, done, reward_details)
                 
                 # d. 训练模型
                 self.dqn_algorithm.train()
 
         # --- 决策 ---
         # 1. 获取当前状态的向量和合法的动作掩码
-        current_state_tensor = self.state_processor.process(game_state)
+        current_state_tensor = self.state_processor.get_state_tensor(game_state)
         # game_state 是 Game 对象，直接访问属性
         # 统一读取一次 available_commands 并在后续所有日志/判定中复用，确保一致性
         available_commands = game_state.available_commands
         masks = self.state_processor.get_action_masks(game_state)
 
         # 3. 使用DQN算法选择一个动作
-        chosen_action = self.dqn_algorithm.choose_action(current_state_tensor, masks, game_state)
+        # SpireAgent.choose_action 不需要 masks 参数 (它内部处理或不需要)
+        chosen_action = self.dqn_algorithm.choose_action(current_state_tensor, game_state)
         
 
         # --- 为下一步做准备 ---
@@ -109,7 +114,8 @@ class DQNAgent:
         从经验回放区采样数据，训练一次网络。
         这是提供给 train.py 在每局结束后调用的接口。
         """
-        self.dqn_algorithm.train(batch_size)
+        # SpireAgent.train() 使用内部配置的 batch_size
+        self.dqn_algorithm.train()
 
     def load_model(self, model_path: str, map_location=None):
         """
