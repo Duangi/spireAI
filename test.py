@@ -1,6 +1,7 @@
-import torch
-device = torch.device('cuda')
-a = torch.randn(2000,2000, device=device)
-for _ in range(5000):
-    a = a.matmul(a)
-torch.cuda.synchronize()
+import os
+
+
+def get_root_dir():
+    return os.path.abspath(os.path.dirname(__file__))
+
+print(get_root_dir())
