@@ -304,7 +304,8 @@ class RewardCalculator:
                 pass
         
         # 赢得战斗但没有捡金币的惩罚
-        if prev_state.screen_type == "CombatRewardScreen":
+        if prev_state.screen_type == ScreenType.COMBAT_REWARD:
+            
             if "gold" in prev_state.choice_list:
                 # 走了但是选项里面还有金币
                 value = self.WIN_BATTLE_NO_GOLD_PENALTY

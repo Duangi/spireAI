@@ -27,15 +27,17 @@ from spirecomm.ai.dqn_core.model import SpireConfig
 import os
 import time
 from datetime import datetime
-from spirecomm.utils.path import get_root_dir
 
 # --- 2. 定义训练超参数 ---
 MAX_STEPS = 2000000  # 总共训练 200w steps
-TARGET_UPDATE_STEPS = 2000 # 每 2000 steps 更新一次目标网络
-SAVE_MODEL_STEPS = 5000 # 每 5000 steps 保存一次模型
+TARGET_UPDATE_STEPS = 200 # 每 200 steps 更新一次目标网络
+SAVE_MODEL_STEPS = 500 # 每 500 steps 保存一次模型
+MIN_MEMORY_TO_TRAIN = 200 # 经验池中至少有这么多记忆才开始训练
 TRAIN_BATCHES_PER_EPISODE = 64 # 每局游戏结束后，从经验池中采样训练的次数
 BATCH_SIZE = 32 # 每次训练时从经验池采样的大小
-
+# 就是 train.py 的路径
+def get_root_dir():
+    return os.path.abspath(os.path.dirname(__file__))
 # 从最新的模型开始训练
 def get_latest_model_agent(player_class: PlayerClass = None, wandb_logger: WandbLogger = None) -> Tuple[int,DQNAgent]:
     models_dir = os.path.join(get_root_dir(), "models")
@@ -43,12 +45,17 @@ def get_latest_model_agent(player_class: PlayerClass = None, wandb_logger: Wandb
         models_dir = os.path.join(models_dir, player_class.name)
     # 找到数字最大的模型文件,如果没有则返回0和新建的DQNAgent
     if not os.path.exists(models_dir):
-        return 0, DQNAgent(wandb_logger=wandb_logger)
+        agent = DQNAgent(wandb_logger=wandb_logger)
+        # 确保 agent 有 steps_done 属性
+        agent.steps_done = 0
+        return 0, agent
     
     # 修改：查找 step_xxx.pth
     model_files = [f for f in os.listdir(models_dir) if f.startswith("step_") and f.endswith(".pth")]
     if not model_files:
-        return 0, DQNAgent(wandb_logger=wandb_logger)
+        agent = DQNAgent(wandb_logger=wandb_logger)
+        agent.steps_done = 0
+        return 0, agent
     
     latest_step = 0
     latest_model_path = None
@@ -63,12 +70,13 @@ def get_latest_model_agent(player_class: PlayerClass = None, wandb_logger: Wandb
             
     if latest_model_path:
         agent = DQNAgent(model_path=latest_model_path, wandb_logger=wandb_logger)
-        # 假设 agent 有 steps_done 属性，需要同步为加载的 step
-        if hasattr(agent, 'steps_done'):
-            agent.steps_done = latest_step
+        # 同步或初始化 steps_done 为加载的 step
+        agent.steps_done = latest_step
         return latest_step, agent
     else:
-        return 0, DQNAgent(wandb_logger=wandb_logger)
+        agent = DQNAgent(wandb_logger=wandb_logger)
+        agent.steps_done = 0
+        return 0, agent
 
 def save_model_checkpoint(agent: DQNAgent, models_dir: str, current_step: int):
     """
@@ -81,15 +89,22 @@ def save_model_checkpoint(agent: DQNAgent, models_dir: str, current_step: int):
         torch.save(agent.dqn_algorithm.policy_net.state_dict(), save_path)
         
         log_line = (f"{datetime.now().isoformat()} 已保存模型。当前Steps={current_step}\n")
-        with open(os.path.join(models_dir, "save_model.log"), "a", encoding="utf-8") as lf:
-            lf.write(log_line)
-            
+        _write_to_log_file(log_line)
+
         # 另存一份最新模型
         latest_path = os.path.join(models_dir, "latest.pth")
         torch.save(agent.dqn_algorithm.policy_net.state_dict(), latest_path)
         return save_path, latest_path
     except Exception as e:
         return None, None
+    
+def _write_to_log_file(log_line: str):
+    """
+    将日志写入指定的模型目录下的 save_model.log 文件。
+    """
+    models_dir = os.path.join(get_root_dir(), "models")
+    with open(os.path.join(models_dir, "save_model.log"), "a", encoding="utf-8") as lf:
+        lf.write(log_line)
 
 def setup_coordinator_for_agent(agent: DQNAgent) -> Coordinator:
     """
@@ -98,7 +113,19 @@ def setup_coordinator_for_agent(agent: DQNAgent) -> Coordinator:
     coord = Coordinator()
     coord.signal_ready()
     coord.register_command_error_callback(agent.handle_error)
-    coord.register_state_change_callback(agent.get_next_action_in_game)
+    # 用 wrapper 包裹原有 callback，每次请求动作时计数一次 steps
+    def _state_change_wrapper(*args, **kwargs):
+        result = agent.get_next_action_in_game(*args, **kwargs)
+        try:
+            if hasattr(agent, 'steps_done'):
+                agent.steps_done += 1
+            else:
+                agent.steps_done = 1
+        except Exception:
+            # 避免因计数导致中断
+            pass
+        return result
+    coord.register_state_change_callback(_state_change_wrapper)
     coord.register_out_of_game_callback(agent.get_next_action_out_of_game)
     return coord
 
@@ -130,13 +157,18 @@ def train_single_class(agent:DQNAgent, max_steps:int = MAX_STEPS, player_class:P
         current_steps = agent.steps_done if hasattr(agent, 'steps_done') else 0
         if current_steps >= max_steps:
             break
-
+        log_line = (f"开始训练 {chosen_class}进阶 {ascension_level}\n")
+        _write_to_log_file(log_line)
         coordinator.play_one_game(chosen_class, ascension_level=ascension_level)
 
         # 学习阶段：每局结束后多次从经验池采样训练
-        for _ in range(TRAIN_BATCHES_PER_EPISODE):
-            agent.learn(BATCH_SIZE)
+        if len(agent.dqn_algorithm.memory) > MIN_MEMORY_TO_TRAIN:
+            # 预热阶段
+            for _ in range(TRAIN_BATCHES_PER_EPISODE):
+                agent.learn(BATCH_SIZE)
 
+        log_line = (f"learn过程结束，当前Steps={current_steps}\n")
+        _write_to_log_file(log_line)
         # 获取最新 step
         current_steps = agent.steps_done if hasattr(agent, 'steps_done') else 0
 
@@ -164,6 +196,10 @@ def train_all_classes(agent: DQNAgent = None, max_steps: int = MAX_STEPS, ascens
             agent.dqn_algorithm.wandb_logger.finish()
     coordinator.register_on_exit_callback(on_exit)
 
+    # 确保 agent 有 steps_done，用于记录训练进度
+    if not hasattr(agent, 'steps_done'):
+        agent.steps_done = 0
+    
     player_class_cycle = itertools.cycle(PlayerClass)
     
     # 记录上一次保存和更新的 step
@@ -177,11 +213,16 @@ def train_all_classes(agent: DQNAgent = None, max_steps: int = MAX_STEPS, ascens
 
         chosen_class = next(player_class_cycle)
         agent.change_class(chosen_class)
+        log_line = (f"开始训练 {chosen_class}进阶 {ascension_level}")
+        _write_to_log_file(log_line)
         coordinator.play_one_game(chosen_class, ascension_level=ascension_level)
 
         # 学习阶段：每局结束后多次从经验池采样训练
         for _ in range(TRAIN_BATCHES_PER_EPISODE):
             agent.learn(BATCH_SIZE)
+
+        log_line = (f"learn过程结束，当前Steps={current_steps}\n")
+        _write_to_log_file(log_line)
 
         # 获取最新 step
         current_steps = agent.steps_done if hasattr(agent, 'steps_done') else 0
