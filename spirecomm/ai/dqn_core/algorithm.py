@@ -262,6 +262,10 @@ class SpireAgent:
     def update_target_net(self):
         self.target_net.load_state_dict(self.policy_net.state_dict())
 
+    def set_inference_mode(self):
+        """切换到推理模式，不进行探索。"""
+        self.is_training = False
+
     # ==========================================
     # 4. 动作选择 (Inference)
     # ==========================================

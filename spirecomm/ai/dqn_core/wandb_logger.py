@@ -13,6 +13,7 @@ import signal
 import atexit
 import threading
 import time
+from spirecomm.ai.absolute_logger import AbsoluteLogger, LogType
 
 class SpireStateDecoder:
     """
@@ -112,6 +113,17 @@ class WandbLogger:
         :param run_name: 本次运行的名称
         :param config: 超参数字典
         """
+        # Debug Logger
+        self.debug_logger = AbsoluteLogger(LogType.STATE)
+        self.debug_logger.start_episode(filename_suffix="_WandbInit")
+        
+        def log_debug(msg):
+            self.debug_logger.write(f"【WandB】{msg}\n")
+            if self.debug_logger.file_handle:
+                self.debug_logger.file_handle.flush()
+
+        log_debug("Initializing WandbLogger...")
+
         # Load environment variables from .env file
         load_dotenv()
         
@@ -119,27 +131,64 @@ class WandbLogger:
         self.enabled = False
 
         if self.api_key and self.api_key.strip():
+            log_debug("API Key found.")
             # Pre-check connectivity to avoid hanging in retry loop
             if not self._check_connection():
+                log_debug("Connection check failed. Setting WANDB_MODE=offline")
                 os.environ["WANDB_MODE"] = "offline"
+            else:
+                log_debug("Connection check passed.")
 
             try:
                 # Try online login first
                 try:
                     # If WANDB_MODE is already offline, login might be skipped or behave differently
                     if os.environ.get("WANDB_MODE") != "offline":
+                        log_debug("Attempting wandb.login()...")
                         wandb.login(key=self.api_key)
+                        log_debug("wandb.login() successful.")
                     
-                    self.run = wandb.init(project=project_name, name=run_name, config=config, reinit=True)
+                    log_debug(f"Attempting wandb.init(project={project_name}, name={run_name})...")
+                    # Set settings to force silent mode and avoid console blocking
+                    # console="off": Disable stdout/stderr capture (prevents deadlocks)
+                    # _disable_stats=True: Disable system stats (prevents hanging on some systems)
+                    # _disable_meta=True: Disable meta data collection
+                    self.run = wandb.init(
+                        project=project_name, 
+                        name=run_name, 
+                        config=config, 
+                        reinit=True,
+                        settings=wandb.Settings(
+                            start_method="thread", 
+                            console="off",
+                            _disable_stats=True,
+                            _disable_meta=True
+                        )
+                    )
+                    log_debug("wandb.init() successful.")
                     self.enabled = True
                 except Exception as e:
+                    log_debug(f"Online init failed: {e}. Falling back to offline.")
                     # Fallback to offline mode
                     os.environ["WANDB_MODE"] = "offline"
-                    self.run = wandb.init(project=project_name, name=run_name, config=config, reinit=True)
+                    self.run = wandb.init(
+                        project=project_name, 
+                        name=run_name, 
+                        config=config, 
+                        reinit=True,
+                        # settings=wandb.Settings(
+                        #     start_method="thread", 
+                        #     console="off",
+                        #     _disable_stats=True,
+                        #     _disable_meta=True
+                        # )
+                    )
                     self.enabled = True
             except Exception as e:
+                log_debug(f"WandB init completely failed: {e}")
                 self.enabled = False
         else:
+            log_debug("No API Key found. WandB disabled.")
             self.enabled = False
 
         self.step_buffer = []

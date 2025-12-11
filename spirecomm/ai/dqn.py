@@ -18,8 +18,9 @@ class DQNAgent:
     这个类是与spirecomm协调器直接交互的接口。
     """
 
-    def __init__(self, play_mode=False, model_path=None, wandb_logger: WandbLogger = None):
+    def __init__(self, play_mode=False, model_path=None, wandb_logger: WandbLogger = None, memory_callback=None):
         self.play_mode = play_mode
+        self.memory_callback = memory_callback
         # 1. 初始化核心组件
         self.state_processor = GameStateProcessor()
         self.reward_calculator = RewardCalculator(state_processor=self.state_processor)
@@ -55,8 +56,8 @@ class DQNAgent:
         """
         # --- 学习与记忆 ---
         reward = 0
-        # 只有在非游玩模式下，才进行学习
-        if not self.play_mode:
+        # 只有在非游玩模式下，或者设置了 memory_callback 时，才进行记忆
+        if not self.play_mode or self.memory_callback:
             if self.previous_game_state is not None and self.previous_action is not None:
                 # a. 计算奖励
                 reward, reward_details = self.reward_calculator.calculate(self.previous_game_state, game_state, self.previous_action, self.previous_prev_state)
@@ -69,10 +70,12 @@ class DQNAgent:
                 done = False
                 
                 # c. 记忆经验
-                self.dqn_algorithm.remember(self.previous_state_tensor, self.previous_action, reward, next_state_tensor, done, reward_details)
-                
-                # d. 训练模型
-                self.dqn_algorithm.train()
+                if self.memory_callback:
+                    self.memory_callback(self.previous_state_tensor, self.previous_action, reward, next_state_tensor, done, reward_details, self.previous_game_state, game_state, self.previous_prev_state)
+                elif not self.play_mode:
+                    self.dqn_algorithm.remember(self.previous_state_tensor, self.previous_action, reward, next_state_tensor, done, reward_details)
+                    # d. 训练模型
+                    self.dqn_algorithm.train()
 
         # --- 决策 ---
         # 1. 获取当前状态的向量和合法的动作掩码
@@ -104,7 +107,7 @@ class DQNAgent:
 
     def get_next_action_out_of_game(self, final_game_state=None):
         # 处理上一局游戏的最后一步
-        if not self.play_mode and self.previous_game_state is not None and self.previous_action is not None:
+        if (not self.play_mode or self.memory_callback) and self.previous_game_state is not None and self.previous_action is not None:
             # 计算最后一步的奖励
             # 使用 final_game_state 作为 next_state (如果可用)
             # 如果 final_game_state 是 Game Over 屏幕，它应该包含最终信息
@@ -120,10 +123,12 @@ class DQNAgent:
             else:
                 next_state_tensor = torch.zeros_like(self.previous_state_tensor)
             
-            self.dqn_algorithm.remember(self.previous_state_tensor, self.previous_action, reward, next_state_tensor, True, reward_details)
-            
-            # 触发一次训练
-            self.dqn_algorithm.train()
+            if self.memory_callback:
+                self.memory_callback(self.previous_state_tensor, self.previous_action, reward, next_state_tensor, True, reward_details, self.previous_game_state, final_game_state, self.previous_prev_state)
+            elif not self.play_mode:
+                self.dqn_algorithm.remember(self.previous_state_tensor, self.previous_action, reward, next_state_tensor, True, reward_details)
+                # 触发一次训练
+                self.dqn_algorithm.train()
             
         # 重置状态
         self.previous_game_state = None

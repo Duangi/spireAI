@@ -50,9 +50,9 @@ def read_stdin(input_queue, coordinator):
             else:
                 stdin_input += input_char
         # 输入到txt文件
-        with open('process.txt', 'a') as f:
-            f.write('-----input-----' + '\n')
-            f.write(stdin_input + '\n')
+        # with open('process.txt', 'a') as f:
+        #     f.write('-----input-----' + '\n')
+        #     f.write(stdin_input + '\n')
         input_queue.put(stdin_input)
 
 
@@ -66,9 +66,9 @@ def write_stdout(output_queue):
     while True:
         output = output_queue.get()
         # 输出到txt文件
-        with open('process.txt', 'a') as f:
-            f.write('-----output-----' + '\n')
-            f.write(output + '\n')
+        # with open('process.txt', 'a') as f:
+        #     f.write('-----output-----' + '\n')
+        #     f.write(output + '\n')
         # print(output, end='\n', flush=True)
         sys.__stdout__.write(output + '\n')
         sys.__stdout__.flush()
