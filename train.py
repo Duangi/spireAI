@@ -1,5 +1,19 @@
 #!/opt/miniconda3/envs/spire/bin/python3
 # 使用指定的python解释器运行此脚本
+import os
+# --- Proxy Configuration ---
+# Explicitly set proxy for this process to ensure WandB connectivity
+# This avoids affecting global system settings or VS Code extensions
+os.environ["HTTP_PROXY"] = "http://127.0.0.1:7890"
+os.environ["HTTPS_PROXY"] = "http://127.0.0.1:7890"
+# ---------------------------
+
+
+
+# Silence WandB console output
+os.environ["WANDB_SILENT"] = "true"
+# --------------------------
+
 import itertools
 from typing import Tuple
 import torch
@@ -87,6 +101,13 @@ def train_single_class(agent:DQNAgent, num_episodes:int = NUM_EPISODES, player_c
     if agent is None:
         _, agent = get_latest_model_agent()
     coordinator = setup_coordinator_for_agent(agent)
+    
+    # 注册退出回调，确保 WandB 正确结束
+    def on_exit():
+        if agent.dqn_algorithm.wandb_logger:
+            agent.dqn_algorithm.wandb_logger.finish()
+    coordinator.register_on_exit_callback(on_exit)
+
     chosen_class = player_class
     agent.change_class(chosen_class)
     # 为该角色准备独立的模型保存目录：models/<PLAYERCLASS.name>
@@ -117,6 +138,13 @@ def train_all_classes(agent: DQNAgent = None, num_episodes: int = NUM_EPISODES, 
     if agent is None:
         _, agent = get_latest_model_agent()
     coordinator = setup_coordinator_for_agent(agent)
+    
+    # 注册退出回调，确保 WandB 正确结束
+    def on_exit():
+        if agent.dqn_algorithm.wandb_logger:
+            agent.dqn_algorithm.wandb_logger.finish()
+    coordinator.register_on_exit_callback(on_exit)
+
     player_class_cycle = itertools.cycle(PlayerClass)
 
     for episode in range(1, num_episodes + 1):

@@ -125,6 +125,3 @@ def _pad_vector_list(vec_list, max_n, vec_size=None, default_size=0):
     else:
         size = vec_size if vec_size is not None else default_size
         return torch.zeros(max_n * size)
-if __name__ == "__main__":
-    # 测试normal_normalize
-    print(normal_normalize(100,0,50))

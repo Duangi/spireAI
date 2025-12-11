@@ -1,6 +1,8 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+import json
 import torch.nn as nn
 import torch.nn.functional as F
+import xxhash
 from spirecomm.ai.constants import MAX_HAND_SIZE, MAX_MONSTER_COUNT, MAX_DECK_SIZE, MAX_POTION_COUNT,MAX_VOCAB_SIZE,MAX_SCREEN_ITEM_FEAT_DIM, MAX_SCREEN_MISC_DIM, MAX_SCREEN_ITEMS
 from spirecomm.ai.dqn_core.action import NUM_ACTION_TYPES
 import torch
@@ -162,6 +164,41 @@ class SpireState:
     map_node_ids: torch.Tensor             # [Batch, 60]
     map_node_coords: torch.Tensor          # [Batch, 60, 2]
     map_mask: torch.Tensor                 # [Batch, 60]
+
+    def __str__(self):
+        """
+        生成该状态的确定性字符串表示。
+        忽略 device (CPU/GPU) 和 grad 差异，仅关注形状和数值。
+        """
+        state_dict = {}
+        
+        # 1. 自动遍历所有字段
+        for field in fields(self):
+            val = getattr(self, field.name)
+            
+            if isinstance(val, torch.Tensor):
+                # 2. 标准化 Tensor
+                # .detach(): 去除梯度信息
+                # .cpu(): 统一移动到 CPU
+                # .tolist(): 转为 Python 原生列表，消除 PyTorch 打印格式(precision/linewidth)的差异
+                # 包含 shape 是为了区分数据量相同但形状不同的情况 (如 [1, 6] vs [2, 3])
+                key = f"{field.name} | shape{tuple(val.shape)}"
+                content = val.detach().cpu().tolist()
+                state_dict[key] = content
+            else:
+                # 处理非 Tensor 字段 (如果有)
+                state_dict[field.name] = str(val)
+
+        # 3. 确定性序列化
+        # 使用 json.dumps 配合 sort_keys=True，确保字典键的顺序永远固定
+        # 这样即使字典内部存储顺序变化，生成的字符串也是一样的
+        return json.dumps(state_dict, sort_keys=True, indent=None)
+
+    # 可选：如果你需要哈希值（例如放入 set 或作为 dict 的 key）
+    def __hash__(self):
+        # 使用xxhash
+        return xxhash.xxh64(str(self)).intdigest()
+
 
 # ==========================================
 # 3. 输出结果契约 (Output Contract)

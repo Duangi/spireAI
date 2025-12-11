@@ -23,11 +23,10 @@ class ProgressLogger:
         """析构函数，确保在对象销毁时文件能被正确关闭并安全重命名为 INCOMPLETE（带异常保护）。"""
         try:
             if self.file_handle and not self.file_handle.closed:
-                print(f"ProgressLogger: Force closing log file due to unexpected exit: {self.log_file_path}", file=sys.stderr)
                 try:
                     self.file_handle.close()
                 except Exception as e:
-                    print(f"ProgressLogger: failed to close file_handle: {e}", file=sys.stderr)
+                    raise RuntimeError(f"无法关闭日志文件: {e}")
                 # 只有在原文件存在时才尝试重命名，重命名也要捕获异常
                 try:
                     if self.log_file_path and os.path.exists(self.log_file_path):
@@ -36,10 +35,10 @@ class ProgressLogger:
                         if not os.path.exists(final_path):
                             os.rename(self.log_file_path, final_path)
                 except Exception as e:
-                    print(f"ProgressLogger: failed to rename incomplete log: {e}", file=sys.stderr)
+                    raise RuntimeError(f"无法重命名日志文件: {e}")
         except Exception as e:
             # 最后防护：确保 __del__ 不抛异常
-            print(f"ProgressLogger.__del__ unexpected error: {e}", file=sys.stderr)
+            raise RuntimeError(f"析构函数出错: {e}")
 
     def start_episode(self):
         """在一局游戏开始时调用。"""
@@ -116,7 +115,6 @@ class ProgressLogger:
         self.file_handle.write(f"End Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
         self.file_handle.write(f"Total Duration: {duration}\n")
         self.file_handle.close()
-        print(f"Progress log saved to: {self.log_file_path}", file=sys.stderr)
 
         # 重置状态
         self.log_file_path = None

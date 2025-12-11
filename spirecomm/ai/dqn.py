@@ -22,7 +22,7 @@ class DQNAgent:
         self.play_mode = play_mode
         # 1. 初始化核心组件
         self.state_processor = GameStateProcessor()
-        self.reward_calculator = RewardCalculator()
+        self.reward_calculator = RewardCalculator(state_processor=self.state_processor)
 
         # 初始化配置
         config = SpireConfig()
@@ -64,7 +64,9 @@ class DQNAgent:
                 # b. 处理新状态
                 next_state_tensor = self.state_processor.get_state_tensor(game_state)
                 # game_state 是 Game 对象，直接访问属性
-                done = not game_state.in_game
+                # 在 get_next_action_in_game 中，我们肯定还在游戏中，所以 done 强制为 False
+                # 真正的 done=True 只会在 get_next_action_out_of_game 中触发
+                done = False
                 
                 # c. 记忆经验
                 self.dqn_algorithm.remember(self.previous_state_tensor, self.previous_action, reward, next_state_tensor, done, reward_details)
@@ -81,8 +83,8 @@ class DQNAgent:
         masks = self.state_processor.get_action_masks(game_state)
 
         # 3. 使用DQN算法选择一个动作
-        # SpireAgent.choose_action 不需要 masks 参数 (它内部处理或不需要)
-        chosen_action = self.dqn_algorithm.choose_action(current_state_tensor, game_state)
+        # SpireAgent.choose_action 需要 masks 参数
+        chosen_action = self.dqn_algorithm.choose_action(current_state_tensor, masks, game_state)
         
 
         # --- 为下一步做准备 ---
@@ -100,7 +102,35 @@ class DQNAgent:
         
         return action_string
 
-    def get_next_action_out_of_game(self):
+    def get_next_action_out_of_game(self, final_game_state=None):
+        # 处理上一局游戏的最后一步
+        if not self.play_mode and self.previous_game_state is not None and self.previous_action is not None:
+            # 计算最后一步的奖励
+            # 使用 final_game_state 作为 next_state (如果可用)
+            # 如果 final_game_state 是 Game Over 屏幕，它应该包含最终信息
+            reward, reward_details = self.reward_calculator.calculate(self.previous_game_state, final_game_state, self.previous_action, self.previous_prev_state)
+            
+            # 记录经验，标记 done=True
+            # next_state_tensor: 如果有 final_game_state，尝试转换它，否则用全0
+            if final_game_state:
+                try:
+                    next_state_tensor = self.state_processor.get_state_tensor(final_game_state)
+                except:
+                    next_state_tensor = torch.zeros_like(self.previous_state_tensor)
+            else:
+                next_state_tensor = torch.zeros_like(self.previous_state_tensor)
+            
+            self.dqn_algorithm.remember(self.previous_state_tensor, self.previous_action, reward, next_state_tensor, True, reward_details)
+            
+            # 触发一次训练
+            self.dqn_algorithm.train()
+            
+        # 重置状态
+        self.previous_game_state = None
+        self.previous_prev_state = None
+        self.previous_action = None
+        self.previous_state_tensor = None
+
         return StartGameAction(self.chosen_class)
 
     def handle_error(self, error):

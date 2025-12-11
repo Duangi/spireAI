@@ -366,32 +366,3 @@ class Monster(Character):
             "half_dead": self.half_dead,
             "is_gone": self.is_gone,
         }
-
-if __name__ == "__main__":
-    # 测试Monster
-    # monster = Monster("test", 1, 100, 100, 0, Intent.ATTACK, False, False, 0, None, None, 10, 10, 3)
-    # vec = monster.get_vector()
-    # print(vec)
-
-    orb = {"passive_amount":3,"name":"闪电","id":"Lightning","evoke_amount":8}
-    # 测试orb的读取
-    # orb_obj = Orb.from_json(orb)
-    # print(orb_obj.get_vector())
-
-    player_json = {
-        "orbs": [],
-        "current_hp": 36,
-        "block": 0,
-        "max_hp": 70,
-        "powers": [
-            {
-                "amount": 3,
-                "just_applied": False,
-                "name": "虚弱",
-                "id": "Weakened"
-            }
-        ],
-        "energy": 1
-    }
-    player_obj = Player.from_json(player_json)
-    print(player_obj.get_vector())

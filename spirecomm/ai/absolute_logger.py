@@ -53,11 +53,11 @@ class AbsoluteLogger:
         self.file_handle = None
         self._ensure_dir_exists()
 
-    def start_episode(self):
+    def start_episode(self, filename_suffix=""):
         """在一局游戏开始时调用。"""
         self.step_count = 0
         self.start_time = datetime.datetime.now()
-        filename = f"{self.start_time.strftime('%Y.%m.%d')}{self.start_time.strftime('_%H.%M.%S')}.txt"
+        filename = f"{self.start_time.strftime('%Y.%m.%d')}{self.start_time.strftime('_%H.%M.%S')}{filename_suffix}.txt"
         self.log_file_path = os.path.join(self.log_file_path, filename)
         # 确保目标目录存在（防止在并发/不同启动方式下出错）
         log_dir = os.path.dirname(self.log_file_path)
@@ -99,7 +99,7 @@ class AbsoluteLogger:
             else:
                 self.file_handle.write(str(content))
         else:
-            print(f"Warning: Log file not open. Cannot write to {self.log_file_path}", file=sys.stderr)
+            raise RuntimeError("日志文件未打开，无法写入内容。")
 
         # 写完之后，查看是否超出最大文件数，若超出则删除最旧的文件
         log_dir = os.path.dirname(self.log_file_path)

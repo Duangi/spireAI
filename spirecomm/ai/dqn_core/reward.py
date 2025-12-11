@@ -1,7 +1,11 @@
+from typing import List
 from spirecomm.ai.dqn_core.action import BaseAction
 from spirecomm.spire.game import Game
 from spirecomm.ai.dqn_core.action import DecomposedActionType
 from spirecomm.ai.absolute_logger import AbsoluteLogger, LogType
+# 用于在需要时生成 game.state_hash
+from spirecomm.ai.dqn_core.state import GameStateProcessor
+from spirecomm.spire.screen import CombatReward, CombatRewardScreen, ScreenType
 
 class RewardCalculator:
     """
@@ -9,38 +13,48 @@ class RewardCalculator:
     这个类的设计旨在将奖励逻辑与主训练循环分离，使其易于调整和维护。
     """
 
-    def __init__(self):
+    def __init__(self, state_processor=None):
+        self.state_processor = state_processor
         # --- 战斗相关奖励 ---
         # 对敌人造成伤害的奖励乘数（每1点伤害）
         self.DAMAGE_DEALT_MULTIPLIER = 1.0
         # 自身受到伤害的惩罚乘数（每1点伤害）
-        self.DAMAGE_TAKEN_MULTIPLIER = -2.0  # 通常，受到伤害的惩罚应高于造成伤害的奖励
+        self.DAMAGE_TAKEN_MULTIPLIER = -2.0 
         # 新增：每个怪物死亡的固定奖励
-        self.MONSTER_DEATH_REWARD = 10.0
+        self.MONSTER_DEATH_REWARD = 5.0
         # 赢得一场普通战斗的奖励
-        self.WIN_BATTLE_REWARD = 30.0
+        self.WIN_BATTLE_REWARD = 50.0
         # 输掉一场战斗的惩罚 -1000还是太高了，哥们直接不打了 原地摆烂
         self.LOSE_BATTLE_REWARD = -10.0
 
         # --- 资源管理奖励 ---
         # 每浪费1点能量结束回合的惩罚
-        self.WASTE_ENERGY_PENALTY = -5.0
+        self.WASTE_ENERGY_PENALTY = -1.0 # 降低惩罚，初期随机策略容易浪费能量
         # 每获得1点金钱的奖励  0.1的时候战斗结束的钱都不捡了
-        self.GOLD_GAINED_REWARD = 2
+        self.GOLD_GAINED_REWARD = 0.5
+        # 每被偷1点钱的惩罚
+        self.GOLD_STOLEN_PENALTY = -0.5
         # 每获得一瓶药水的奖励
         self.POTION_GAINED_REWARD = 5.0
         # 每失去一瓶药水的惩罚
-        self.POTION_DISCARD_PENALTY = -10.0
+        self.POTION_DISCARD_PENALTY = -5.0
+
+        # 给一个赢得了战斗但是不捡金币的惩罚！浪费可耻
+        self.WIN_BATTLE_NO_GOLD_PENALTY = -1.0
+        # 赢得了战斗不捡遗物的惩罚
+        self.WIN_BATTLE_NO_RELIC_PENALTY = -5.0
+        # 赢得了战斗不捡药水的惩罚
+        self.WIN_BATTLE_NO_POTION_PENALTY = -3.0
 
         # --- 游戏进程奖励 ---
         # Act 1 (1-17层) 每提升一层的奖励
-        self.FLOOR_INCREASE_ACT1 = 100.0
+        self.FLOOR_INCREASE_ACT1 = 10.0
         # Act 2 (18-34层) 每提升一层的奖励
-        self.FLOOR_INCREASE_ACT2 = 200.0
+        self.FLOOR_INCREASE_ACT2 = 20.0
         # Act 3 (35-51层) 每提升一层的奖励
-        self.FLOOR_INCREASE_ACT3 = 300.0
+        self.FLOOR_INCREASE_ACT3 = 30.0
         # Act 4 (52-55层) 每提升一层的奖励
-        self.FLOOR_INCREASE_ACT4 = 400.0
+        self.FLOOR_INCREASE_ACT4 = 40.0
 
         # --- BOSS战特殊奖励 ---
         # 战胜第一幕BOSS (17层) 的额外奖励
@@ -58,7 +72,7 @@ class RewardCalculator:
         # 战斗中选择了CONFIRM时给予奖励
         self.CONFIRM_REWARD_IN_COMBAT = 2.0
         # 假设next_state和prev_prev_state完全一致的话，表示卡bug不动了，给予大大的惩罚！
-        self.STUCK_PENALTY = -100.0
+        self.STUCK_PENALTY = -50.0
         self.stuck_count = 5
 
 
@@ -70,6 +84,28 @@ class RewardCalculator:
         计算从 prev_state 转换到 next_state 所获得的奖励，并将各项明细通过 absolute_logger.write 输出，方便排查。
         """
         total_reward = 0.0
+
+        # 确保传入的 state 有 state_hash（best-effort：如果没有则生成）
+        def _ensure_hash(g):
+            if g is None:
+                self.absolute_logger.write("无法为 None 状态生成 hash，直接返回 0.0")
+                return
+            if getattr(g, "state_hash", None) is None:
+                try:
+                    # 使用传入的 processor 或短生命周期的 processor 生成并写回 g.state_hash
+                    proc = self.state_processor if self.state_processor else GameStateProcessor()
+                    proc.get_state_tensor(g)
+                except Exception as e:
+                    # 容错：记录但不抛出，避免影响训练流程
+                    try:
+                        self.absolute_logger.write(f"无法计算 state_hash: {e}")
+                    except Exception:
+                        pass
+
+        # 先为 prev_prev/prev/next 尝试生成 hash（若缺失）
+        _ensure_hash(prev_prev_state)
+        _ensure_hash(prev_state)
+        _ensure_hash(next_state)
 
         # 确保状态有效
         if prev_state is None or next_state is None:
@@ -235,6 +271,12 @@ class RewardCalculator:
             value = gold_change * self.GOLD_GAINED_REWARD
             total_reward += value
             contributions.append(("获得金币", value, f"change={gold_change} * mul={self.GOLD_GAINED_REWARD}"))
+        elif gold_change < 0:
+            # 战斗中掉钱惩罚（大概率是被小偷偷了）
+            if prev_state.in_combat and next_state.in_combat:
+                value = abs(gold_change) * self.GOLD_STOLEN_PENALTY
+                total_reward += value
+                contributions.append(("战斗中失去金币惩罚", value, f"change={gold_change} * mul={self.GOLD_STOLEN_PENALTY}"))
         # 药水变化奖励
         # 需要判断potions数组中，id不为"Potion Slot" 或者 name 不为 "药水栏"的数量变
         prev_potion_count = 0
@@ -252,37 +294,62 @@ class RewardCalculator:
             contributions.append(("获得药水", value, f"change={potion_change} * mul={self.POTION_GAINED_REWARD}"))
         elif potion_change < 0:
             if action.decomposed_type == DecomposedActionType.POTION_DISCARD:
-                # 丢弃药水惩罚多一些
-                value = abs(potion_change) * self.POTION_DISCARD_PENALTY
-                total_reward += value
-                contributions.append(("丢弃药水惩罚", value, f"{self.POTION_DISCARD_PENALTY}"))
+                # 扔药水惩罚,且当前screen不是战斗奖励选择界面和商店界面
+                if prev_state.screen_type != ScreenType.COMBAT_REWARD and prev_state.screen_type != ScreenType.SHOP_SCREEN:
+                    value = abs(potion_change) * self.POTION_DISCARD_PENALTY
+                    total_reward += value
+                    contributions.append(("除了战斗奖励界面和商店界面丢弃药水 给予惩罚", value, f"{self.POTION_DISCARD_PENALTY}"))
             elif action.decomposed_type == DecomposedActionType.POTION_USE:
                 # 使用药水不惩罚
                 pass
-
+        
+        # 赢得战斗但没有捡金币的惩罚
+        if prev_state.screen_type == "CombatRewardScreen":
+            if "gold" in prev_state.choice_list:
+                # 走了但是选项里面还有金币
+                value = self.WIN_BATTLE_NO_GOLD_PENALTY
+                total_reward += value
+                contributions.append(("战斗后未捡金币惩罚", value, f"{self.WIN_BATTLE_NO_GOLD_PENALTY}"))
+            if "relic" in prev_state.choice_list:
+                # 走了但是选项里面还有遗物
+                value = self.WIN_BATTLE_NO_RELIC_PENALTY
+                total_reward += value
+                contributions.append(("战斗后未捡遗物惩罚", value, f"{self.WIN_BATTLE_NO_RELIC_PENALTY}"))
+            if "potion" in prev_state.choice_list and not prev_state.are_potions_full():
+                # 走了但是选项里面还有药水，视为没捡
+                value = self.WIN_BATTLE_NO_POTION_PENALTY
+                total_reward += value
+                contributions.append(("战斗后药水栏没满但是没捡药水惩罚", value, f"{self.WIN_BATTLE_NO_POTION_PENALTY}"))
         # --- 6. 战斗中选择动作的奖惩 ---
-        if prev_state.in_combat and next_state.in_combat and action is not None:
-            # 前后都是choose动作，给予惩罚
-            if action.decomposed_type == DecomposedActionType.CHOOSE:
-                value = self.CHOOSE_PENALTY_IN_COMBAT
-                total_reward += value
-                contributions.append(("战斗中选择动作惩罚", value, f"固定值={self.CHOOSE_PENALTY_IN_COMBAT}"))
-            # 战斗中选择了confirm动作，给予奖励
-            elif action.decomposed_type == DecomposedActionType.CONFIRM:
-                value = self.CONFIRM_REWARD_IN_COMBAT
-                total_reward += value
-                contributions.append(("战斗中确认动作奖励", value, f"固定值={self.CONFIRM_REWARD_IN_COMBAT}"))
+        
+        # if prev_state.in_combat and next_state.in_combat and action is not None:
+        #     # 前后都是choose动作，给予惩罚
+        #     if action.decomposed_type == DecomposedActionType.CHOOSE:
+        #         value = self.CHOOSE_PENALTY_IN_COMBAT
+        #         total_reward += value
+        #         contributions.append(("战斗中选择动作惩罚", value, f"固定值={self.CHOOSE_PENALTY_IN_COMBAT}"))
+        #     # 战斗中选择了confirm动作，给予奖励
+        #     elif action.decomposed_type == DecomposedActionType.CONFIRM:
+        #         value = self.CONFIRM_REWARD_IN_COMBAT
+        #         total_reward += value
+        #         contributions.append(("战斗中确认动作奖励", value, f"固定值={self.CONFIRM_REWARD_IN_COMBAT}"))
         # --- 7. 卡bug检测 ---
         # 因为需要打开选择界面来查看卡牌或者之类奖励的情况，由于卡牌不太好需要skip，此时也会导致prev_prev_state和next_state相同
         # 因此这里需要给一个卡bug的次数阈值，暂定5次，因为有一个同时选5张牌的遗物。
         # 这个次数阈值在层数变化时重置
         is_stuck = False
+        contributions.append(("prev_state.floor", prev_state.floor, "用于检测层数变化以重置计数器"))
+        contributions.append(("next_state.floor", next_state.floor, "用于检测层数变化以重置计数器"))
         if next_state.floor != prev_state.floor:
             self.stuck_count = 5
         if prev_prev_state is not None:
             # 简单比较 prev_prev_state 和 next_state 的关键字段是否完全一致
             try:
-                if prev_prev_state == next_state:
+                contributions.append(("prev_prev_state_hash", prev_prev_state.state_hash, "prev_prev_state 的 hash 值"))
+                contributions.append(("next_state_hash", next_state.state_hash, "next_state 的 hash 值"))
+                # 使用 hash 值进行比较，而不是对象比较
+                if prev_prev_state.state_hash == next_state.state_hash:
+                    contributions.append(("卡bug检测 count", self.stuck_count, "prev_prev_state 与 next_state 关键字段完全一致，开始计数"))
                     self.stuck_count -= 1
                 if self.stuck_count < 0:
                     is_stuck = True

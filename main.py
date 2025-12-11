@@ -1,5 +1,14 @@
 #!/opt/miniconda3/envs/spire/bin/python3
 # 使用指定的python解释器运行此脚本
+import os
+import sys
+
+
+
+# Silence WandB console output
+os.environ["WANDB_SILENT"] = "true"
+# --------------------------
+
 import itertools
 import torch
 
@@ -28,7 +37,5 @@ if __name__ == "__main__":
 
     # --- 2. 开始无限游玩 ---
     for chosen_class in itertools.cycle(PlayerClass):
-        print(f"\n--- Starting new game with {chosen_class.name} ---", file=sys.stderr)
         dqn_agent.change_class(chosen_class)
         result = coordinator.play_one_game(chosen_class)
-        print(f"--- Game Finished. Result: {'Victory' if result else 'Defeat'} ---", file=sys.stderr)

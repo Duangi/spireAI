@@ -18,16 +18,13 @@ if __name__ == "__main__":
     from dataclasses import fields
     from itertools import cycle
 
-    print("Initializing WandbLogger...")
     # Logger will check .env for WANDB_API_KEY. If missing, it will disable itself.
     # Note: WandbLogger has built-in fallback to offline mode if network fails.
     logger = WandbLogger(project_name="spire-ai-test", run_name="test_run", config={"test": True})
 
-    print("Initializing SpireAgent with Logger...")
     config = SpireConfig()
     # Prioritize GPU if available
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
     agent = SpireAgent(config, device=device, wandb_logger=logger)
 
     processor = GameStateProcessor()

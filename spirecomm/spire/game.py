@@ -47,7 +47,7 @@ COMMAND_MAP = {
 
 @dataclass
 class Game:
-    
+    state_hash: int = field(init=False, default=None)
     
     # 数值向量
     current_hp: int # 当前血量 
@@ -119,150 +119,6 @@ class Game:
                 vec[command_index_map[command]] = 1.0
         return vec
 
-    def get_vector(self):
-        """返回所有能够量化的指标，融合进一个vector中用作输入的向量。"""
-        parts = []
-        # 基本标量特征
-        parts.append(torch.tensor([norm_linear_clip(self.max_hp, 80)], dtype=torch.float32)) # Max HP
-        parts.append(torch.tensor([norm_linear_clip(self.current_hp, 150)], dtype=torch.float32)) # Current HP
-        parts.append(torch.tensor([norm_ratio(self.current_hp, self.max_hp)], dtype=torch.float32)) # HP Ratio
-        parts.append(torch.tensor([norm_linear_clip(self.floor, 60)], dtype=torch.float32)) 
-        parts.append(nn.functional.one_hot(torch.tensor(int(self.act) - 1, dtype=torch.long), num_classes=4).float())
-        parts.append(torch.tensor([norm_log(self.gold, 1000)], dtype=torch.float32))
-
-        # character one-hot (use one_hot for clarity)
-        parts.append(nn.functional.one_hot(
-            torch.tensor(int(self.character.value) - 1, dtype=torch.long), 
-            num_classes=len(PlayerClass)).float()
-        )
-
-        # ascension
-        parts.append(torch.tensor([minmax_normalize(self.ascension_level if self.ascension_level is not None else 0, 0, 20)], dtype=torch.float32))
-
-        # relics: pad/truncate to 100 relics (use Relic.get_vector)
-        relic_vec_size = Relic.get_vec_length()
-        parts.append(_pad_vector_list([(r.get_vector()) for r in (self.relics or [])[:100]], 100, vec_size=relic_vec_size))
-        # TODO 除了这个，再加一个embedding层表示relic的种类
-        
-
-        # deck, draw, discard, exhaust: each card vector size = 20 (Card.get_vector)
-        card_vec_size = Card.get_vec_length()
-        parts.append(_pad_vector_list([(c.get_vector()) for c in (self.deck or [])[:MAX_DECK_SIZE]], MAX_DECK_SIZE, vec_size=card_vec_size))
-        parts.append(_pad_vector_list([(c.get_vector()) for c in (self.draw_pile or [])[:MAX_DECK_SIZE]], MAX_DECK_SIZE, vec_size=card_vec_size))
-        parts.append(_pad_vector_list([(c.get_vector()) for c in (self.discard_pile or [])[:MAX_DECK_SIZE]], MAX_DECK_SIZE, vec_size=card_vec_size))
-        parts.append(_pad_vector_list([(c.get_vector()) for c in (self.exhaust_pile or [])[:MAX_DECK_SIZE]], MAX_DECK_SIZE, vec_size=card_vec_size))
-        # 
-        # hand (max 10)
-        parts.append(_pad_vector_list([(c.get_vector()) for c in (self.hand or [])[:MAX_HAND_SIZE]], MAX_HAND_SIZE, vec_size=card_vec_size))
-
-        # potions (max 5)
-        potion_vec_size = Potion.get_vec_length()
-        parts.append(_pad_vector_list([(p.get_vector()) for p in (self.potions or [])[:MAX_POTION_COUNT]], MAX_POTION_COUNT, vec_size=potion_vec_size))
-
-        # map vector: pad/truncate to MAX_MAP_NODE_COUNT * 14
-        map_node_size = Node.get_vec_length()
-        map_vec = torch.zeros(MAX_MAP_NODE_COUNT * map_node_size)
-        if self.map is not None:
-            mvec = self.map.get_vector()
-            mlen = mvec.numel()
-            take = min(mlen, MAX_MAP_NODE_COUNT * map_node_size)
-            if take > 0:
-                map_vec[:take] = mvec.flatten()[:take]
-        parts.append(map_vec)
-
-        # act_boss: simple one-hot per act (3 choices per act). If unknown, zero vector
-        act_boss_options = {
-            1: ["Slime Boss", "The Guardian", "Hexaghost"],
-            2: ["The Champ", "The Collector", "Bronze Automaton"],
-            3: ["Awakened One", "Time Eater", "Donu and Deca"]
-        }
-        boss_onehot = torch.zeros(3, dtype=torch.float32)
-        opts = act_boss_options.get(self.act, None)
-        if opts and self.act_boss in opts:
-            boss_onehot[opts.index(self.act_boss)] = 1.0
-            # 如果是第四幕的最终boss的话，默认就是000，也可以，算是信息给到位了
-        parts.append(boss_onehot)
-        # --- 新增：将当前可选项(choice_list)编码入向量 ---
-        # 最多编码 MAX_CHOICE_LIST 个，每个选项用归一化哈希值表示
-        choice_hashes = torch.zeros(MAX_CHOICE_LIST, dtype=torch.float32)
-        if getattr(self, "choice_list", []):
-            for i, choice in enumerate(self.choice_list[:MAX_CHOICE_LIST]):
-                try:
-                    choice_hashes[i] = get_hash_val_normalized(str(choice))
-                except Exception:
-                    # 若哈希失败则保持为0（稳健处理）
-                    choice_hashes[i] = 0.0
-        parts.append(choice_hashes)
-        # 2) 是否存在可选项（布尔标量）
-        parts.append(torch.tensor([1.0 if getattr(self, "choice_available", False) else 0.0], dtype=torch.float32))
-
-        # combat related: in_combat, player (we encode player.class if available), monsters
-        parts.append(torch.tensor([1.0 if self.in_combat else 0.0], dtype=torch.float32))
-        
-        # player vector
-        if self.player is not None:
-            parts.append(self.player.get_vector())
-        else:
-            # 如果不在战斗中，则用一个零向量填充
-            parts.append(torch.zeros(Player.get_vec_length()))
-
-        # Playable card mask
-        playable_mask = torch.zeros(MAX_HAND_SIZE, dtype=torch.float32)
-        if self.hand:
-            for i, card in enumerate(self.hand[:MAX_HAND_SIZE]):
-                if card.is_playable:
-                    playable_mask[i] = 1.0
-        parts.append(playable_mask)
-
-        # Target monster mask
-        target_mask = torch.zeros(MAX_MONSTER_COUNT, dtype=torch.float32)
-        if self.monsters:
-            for i, monster in enumerate(self.monsters[:MAX_MONSTER_COUNT]):
-                if not monster.is_gone:
-                    target_mask[i] = 1.0
-        parts.append(target_mask)
-
-        # monsters (pad to MAX_MONSTER_COUNT)
-        monster_vec_size = Monster.get_vec_length()
-        parts.append(_pad_vector_list([(m.get_vector()) for m in (self.monsters or [])[:MAX_MONSTER_COUNT]], MAX_MONSTER_COUNT, default_size=monster_vec_size))
-
-        # turn and cards_discarded_this_turn
-        parts.append(torch.tensor([normal_normalize(self.turn, 0, 10)], dtype=torch.float32))
-        parts.append(torch.tensor([normal_normalize(self.cards_discarded_this_turn, 0, 5)], dtype=torch.float32))
-
-        # screen_type and room_phase one-hot
-        screen_type_len = len(ScreenType)
-        if self.screen_type is not None:
-            parts.append(nn.functional.one_hot(torch.tensor(int(self.screen_type.value) - 1, dtype=torch.long), num_classes=screen_type_len).to(torch.float32))
-        else:
-            parts.append(torch.zeros(screen_type_len, dtype=torch.float32))
-
-        room_phase_len = len(RoomPhase)
-        if self.room_phase is not None:
-            parts.append(nn.functional.one_hot(torch.tensor(int(self.room_phase.value) - 1, dtype=torch.long), num_classes=room_phase_len).to(torch.float32))
-        else:
-            parts.append(torch.zeros(room_phase_len, dtype=torch.float32))
-
-        # screen vector (now handled by Screen classes)
-        parts.append(self.screen.get_vector() if self.screen else torch.zeros(Screen.get_vec_length()))
-
-        # available commands flags, 希望模型能够根据这个学习到当前哪些命令虽然是可用，但实际上后续是会被mask掉的
-        parts.append(self.get_available_command_vector())
-
-        result = torch.cat([p.flatten() for p in parts])
-        # 将 result 转为确定性的 contiguous float32 数组再摘要，避免 dtype/内存布局 导致差异
-        try:
-            arr = result.detach().cpu().numpy().astype(np.float32, copy=False)
-            arr = np.ascontiguousarray(arr)
-            self._vector_hash = xxhash.xxh64(arr.tobytes()).hexdigest()
-        except Exception:
-            # 若出错则退回到不抛异常的行为，并记录日志
-            logging.getLogger(__name__).exception("failed to compute vector hash, falling back")
-            try:
-                self._vector_hash = xxhash.xxh64(result.detach().cpu().numpy().tobytes()).hexdigest()
-            except Exception:
-                self._vector_hash = None
-        return result
     def get_numeric_vector(self) -> torch.Tensor:
         """
         仅返回数值型量化特征的向量（不包含embedding等复杂结构）。
@@ -433,26 +289,16 @@ class Game:
             if potion.potion_id == "Potion Slot":
                 return False
         return True
-    def __eq__(self, other):
-        """严格比较：如果两个 Game 的量化向量字节完全相同则视为相等（高效）。"""
-        # 使用 is None 避免递归调用 __eq__
-        if self is None or other is None:
+    
+    def __eq__(self, value):
+        if not isinstance(value, Game):
             return False
-        if not isinstance(other, Game):
-             return False
-         # 快速同对象判断
-        if self is other:
+        if value is None:
+            return False
+        if self is value:
             return True
-        try:
-            # 优先比较摘要（若都存在）
-            if getattr(self, "_vector_hash", None) is not None and getattr(other, "_vector_hash", None) is not None:
-                return self._vector_hash == other._vector_hash
-            # 摘要不可用时使用近似比较（允许浮点微小误差）
-            v1 = self.get_vector().detach().cpu()
-            v2 = other.get_vector().detach().cpu()
-            # 若形状不同，立即判为不等
-            if v1.shape != v2.shape:
-                return False
-            return torch.allclose(v1, v2, rtol=1e-5, atol=1e-8)
-        except Exception:
+        if self.state_hash is not None and value.state_hash is not None:
+            return self.state_hash == value.state_hash
+        else:
             return False
+            

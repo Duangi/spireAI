@@ -141,20 +141,3 @@ class Card:
         
         # 限制值域在[0,1]，避免极端值
         return torch.clamp(y, 0.0, 1.0)
-if __name__ == "__main__":
-    # 测试vector输出
-    card = Card(
-        card_id="test_card",
-        name="Test Card",
-        card_type=CardType.ATTACK,
-        rarity=CardRarity.COMMON,
-        upgrades=3,
-        has_target=False,
-        cost=2,
-        uuid="test_uuid_12345",
-        misc=0,
-        is_playable=False,
-        exhausts=False
-    )
-    vec = card.get_vector()
-    print(f"Card Vector Shape: {vec.shape}")

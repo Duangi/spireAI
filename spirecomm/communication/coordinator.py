@@ -16,17 +16,35 @@ from spirecomm.communication.action import Action, StartGameAction
 from spirecomm.spire.character import PlayerClass
 from spirecomm.utils.path import get_root_dir
 
-def read_stdin(input_queue):
+def read_stdin(input_queue, coordinator):
     """Read lines from stdin and write them to a queue
 
     :param input_queue: A queue, to which lines from stdin will be written
     :type input_queue: queue.Queue
+    :param coordinator: The coordinator instance
+    :type coordinator: Coordinator
     :return: None
     """
     while True:
         stdin_input = ""
         while True:
             input_char = sys.stdin.read(1)
+            if not input_char: # EOF
+                # 父进程关闭了输入流，说明游戏可能已经退出
+                if coordinator.on_exit_callback:
+                    try:
+                        coordinator.on_exit_callback()
+                    except Exception as e:
+                        # 忽略异常，继续退出
+                        pass
+                # 给 WandB 一点时间完成清理（最多等待 2 秒）
+                try:
+                    import time
+                    time.sleep(2)
+                except Exception:
+                    pass
+                # 直接强制终止当前 Python 进程
+                os._exit(0)
             if input_char == '\n':
                 break
             else:
@@ -51,7 +69,9 @@ def write_stdout(output_queue):
         with open('process.txt', 'a') as f:
             f.write('-----output-----' + '\n')
             f.write(output + '\n')
-        print(output, end='\n', flush=True)
+        # print(output, end='\n', flush=True)
+        sys.__stdout__.write(output + '\n')
+        sys.__stdout__.flush()
 
 
 class Coordinator:
@@ -60,7 +80,8 @@ class Coordinator:
     def __init__(self) -> None:
         self.input_queue = queue.Queue()
         self.output_queue = queue.Queue()
-        self.input_thread = threading.Thread(target=read_stdin, args=(self.input_queue,))
+        self.on_exit_callback = None # Initialize before starting threads
+        self.input_thread = threading.Thread(target=read_stdin, args=(self.input_queue, self))
         self.output_thread = threading.Thread(target=write_stdout, args=(self.output_queue,))
         self.input_thread.daemon = True
         self.input_thread.start()
@@ -78,6 +99,15 @@ class Coordinator:
 
         self.absolute_logger = AbsoluteLogger()
         self.absolute_logger.start_episode()
+
+    def register_on_exit_callback(self, new_callback):
+        """Register a function to be called when the game process exits (EOF on stdin)
+
+        :param new_callback: the function to call
+        :type new_callback: function() -> None
+        :return: None
+        """
+        self.on_exit_callback = new_callback
 
     def signal_ready(self):
         """Indicate to Communication Mod that setup is complete
@@ -187,8 +217,12 @@ class Coordinator:
             self.game_is_ready = communication_state.get("ready_for_command")
             if self.last_error is None:
                 self.in_game = communication_state.get("in_game")
-                if self.in_game:
+                # 即使不在游戏中，如果有 game_state 数据，也尝试解析，以便获取 Game Over 等信息
+                if "game_state" in communication_state and communication_state["game_state"]:
                     self.last_game_state = Game.from_json(communication_state.get("game_state"), communication_state.get("available_commands"))
+                elif self.in_game: # Fallback: if in_game is true but no game_state (unlikely), or just to be safe
+                     pass 
+
             if perform_callbacks:
                 if self.last_error is not None:
                     self.action_queue.clear()
@@ -205,7 +239,8 @@ class Coordinator:
                 elif self.stop_after_run:
                     self.clear_actions()
                 elif self.out_of_game_callback:
-                    new_action = self.out_of_game_callback()
+                    # Pass the last known game state (which might be the Game Over screen)
+                    new_action = self.out_of_game_callback(self.last_game_state)
                     # 确保放入队列的是Action对象，而不是字符串
                     if new_action is not None:
                         self.add_action_to_queue(Action(new_action))
@@ -244,7 +279,8 @@ class Coordinator:
         while self.in_game:
             self.execute_next_action_if_ready()
             self.receive_game_state_update()
-        if self.last_game_state.screen_type == ScreenType.GAME_OVER:
+        
+        if self.last_game_state and self.last_game_state.screen_type == ScreenType.GAME_OVER:
             # 游戏结束界面，检查是否胜利，以及到了哪一层
             floor_reached = self.last_game_state.floor
             self.absolute_logger.write(f"游戏结束，最终达到层数: {floor_reached}")

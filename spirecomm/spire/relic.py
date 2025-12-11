@@ -48,13 +48,3 @@ class Relic:
         return cls(json_object["id"], json_object["name"], json_object["counter"], json_object.get("price", 0))
     def __eq__(self, other):
         return other.relic_id == self.relic_id
-if __name__ == "__main__":
-    # 测试遗物向量表示
-    relic = Relic(
-        relic_id="relic_001",
-        name="Ancient Coin",
-        counter=5
-    )
-    vec = relic.get_vector()
-    print(f"Relic Vector Shape: {vec.shape}")
-    print(vec)

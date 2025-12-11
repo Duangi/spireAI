@@ -17,14 +17,12 @@ if __name__ == "__main__":
     from spirecomm.ai.dqn_core.action import SingleAction, ActionType, DecomposedActionType
 
     # 1. Initialize Config and Agent
-    print("Initializing SpireAgent...")
     config = SpireConfig() # Uses default dims we just set
     # Force CPU for testing to avoid CUDA errors if not available
     agent = SpireAgent(config, device="cpu")
     
     processor = GameStateProcessor()
     
-    print(f"Found {len(test_cases)} test cases.")
     
     # 2. Collect some valid states
     valid_states = []
@@ -32,7 +30,6 @@ if __name__ == "__main__":
     # Try to collect ALL valid states to stress test the model
     target_count = 1000 
     
-    print(f"Collecting valid states (limit {target_count})...")
     
     for i, case in enumerate(test_cases):
         if len(valid_states) >= target_count:
@@ -68,22 +65,17 @@ if __name__ == "__main__":
                 with torch.no_grad():
                     _ = agent.policy_net(batch_state)
             except Exception as e:
-                print(f"Case {i} generated a state, but Model Forward Pass failed: {e}")
                 # We don't add it to valid_states if it crashes the model
                 valid_states.pop() 
                 
         except Exception as e:
-            # print(f"Case {i} failed processing: {e}")
             continue
-            
-    print(f"Collected {len(valid_states)} states that passed Model Forward Pass.")
+        
     
     if len(valid_states) < 32:
-        print("Not enough valid states to test batch training (need 32).")
         sys.exit(1)
 
     # 3. Populate Memory
-    print("Populating agent memory...")
     
     # Create a dummy action (End Turn)
     dummy_action = SingleAction(type=ActionType.END, decomposed_type=DecomposedActionType.END)
@@ -97,11 +89,8 @@ if __name__ == "__main__":
         agent.remember(s, dummy_action, reward, next_s, done)
         
     # 4. Run Training Step
-    print("Running agent.train()...")
     try:
         agent.train()
-        print("Training step completed successfully!")
     except Exception as e:
-        print(f"Training step failed: {e}")
         import traceback
         traceback.print_exc()

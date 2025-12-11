@@ -8,7 +8,6 @@ from spirecomm.spire.game import Game
 from spirecomm.ai.dqn_core.action import  BaseAction, PlayAction, ChooseAction, PotionDiscardAction, PotionUseAction, SingleAction, ActionType, DecomposedActionType
 from typing import List
 import numpy as np
-from spirecomm.ai.absolute_logger import AbsoluteLogger, LogType
 import json
 import torch
 import torch.nn as nn
@@ -20,7 +19,7 @@ from spirecomm.spire.relic import Relic
 from spirecomm.spire.potion import Potion
 from spirecomm.spire.character import Player, Monster, PlayerClass
 from spirecomm.spire.map import Map, Node
-from spirecomm.spire.screen import Screen
+from spirecomm.spire.screen import Screen, ScreenType, RewardType
 
 @dataclass
 class GameStateProcessor:
@@ -30,9 +29,7 @@ class GameStateProcessor:
     以便作为神经网络的输入。
     这个实现将具体的向量化逻辑委托给 `Game` 对象自身的 `get_vector` 方法。
     """
-    absolute_logger: AbsoluteLogger = field(default_factory=lambda: AbsoluteLogger(LogType.STATE))
-    def __post_init__(self):
-        self.absolute_logger.start_episode()
+
     def get_state_tensor(self, game: Game) -> SpireState:
         """
         从 Game 对象获取完整的 SpireState 对象。
@@ -67,7 +64,7 @@ class GameStateProcessor:
             torch.tensor([norm_ratio(game.current_hp, game.max_hp)], dtype=torch.float32),
             torch.tensor([norm_linear_clip(game.floor, 60)], dtype=torch.float32),
             act_onehot,
-            torch.tensor([norm_log(game.gold, 1000)], dtype=torch.float32),
+            torch.tensor([norm_linear_clip(game.gold, 1000)], dtype=torch.float32), # 超过1000的金币其实都没什么必要了也没什么可能了
             class_onehot,
             torch.tensor([minmax_normalize(game.ascension_level if game.ascension_level is not None else 0, 0, 20)], dtype=torch.float32),
             boss_onehot
@@ -215,7 +212,7 @@ class GameStateProcessor:
                 map_node_coords[i] = node.get_pos_features()
                 map_mask[i] = 1.0
 
-        return SpireState(
+        result = SpireState(
             global_numeric=global_numeric,
             action_mask=action_mask,
             deck_ids=deck_ids,
@@ -248,6 +245,9 @@ class GameStateProcessor:
             map_node_coords=map_node_coords,
             map_mask=map_mask
         )
+        game.state_hash = hash(result)
+        return result
+    
 
     def process(self, game: Game):
         """将原始 game_state 转换为 SpireState 对象 (不增加 Batch 维度)"""
@@ -262,8 +262,6 @@ class GameStateProcessor:
         ava_commands = game_state.available_commands
         # 移除"key","click","wait","state"等无实际意义的命令
         ava_commands = [cmd for cmd in ava_commands if cmd not in ["key", "click", "wait", "state"]]
-        self.absolute_logger.write(f"\n可用命令列表: {ava_commands}\n")
-        self.absolute_logger.write(f"筛选之后结果: {[action.to_string() for action in available_actions]}\n")
 
         # 初始化所有掩码为 False
         action_type_mask = np.zeros(len(DecomposedActionType), dtype=bool)
@@ -286,7 +284,17 @@ class GameStateProcessor:
                 if action.target_idx is not None:
                     target_monster_mask[action.target_idx] = True
             elif isinstance(action, ChooseAction):
-                choose_option_mask[action.choice_idx] = True
+                # Check for potion reward when slots are full
+                is_valid_choice = True
+                if game_state.screen_type == ScreenType.COMBAT_REWARD and hasattr(game_state.screen, 'rewards'):
+                     # Ensure index is within bounds
+                     if action.choice_idx < len(game_state.screen.rewards):
+                         reward = game_state.screen.rewards[action.choice_idx]
+                         if reward.reward_type == RewardType.POTION and game_state.are_potions_full():
+                             is_valid_choice = False
+                
+                if is_valid_choice:
+                    choose_option_mask[action.choice_idx] = True
             elif isinstance(action, PotionUseAction):
                 # 明确标记可 use 的药水位
                 potion_use_mask[action.potion_idx] = True
@@ -296,19 +304,6 @@ class GameStateProcessor:
                 # 明确标记可 discard 的药水位
                 potion_discard_mask[action.potion_idx] = True
                 
-
-        self.absolute_logger.write("动作掩码生成完毕。\n")
-        self.absolute_logger.write({
-            'action_mask':  str(action_type_mask.tolist()),
-            'play_mask': str(play_card_mask.tolist()),
-            'target_mask': str(target_monster_mask.tolist()),
-            'choose_mask': str(choose_option_mask.tolist()),
-            'potion_use_mask': str(potion_use_mask.tolist()),
-            'potion_discard_mask': str(potion_discard_mask.tolist()),
-            # 兼容：合并一个总的 potion_mask（use 或 discard 任一可行）
-            'potion_mask': str((potion_use_mask | potion_discard_mask).tolist()),
-            'hand': str([str(card.name) for card in game_state.hand]),
-        })
         # 返回时提供独立的 potion_use / potion_discard，并保留向后兼容的 'potion'（合并）
         return {
             'action_type': action_type_mask,
@@ -375,23 +370,27 @@ class GameStateProcessor:
         return actions
     
 if __name__ == "__main__":
-    # 测试 GameStateProcessor
-    from spirecomm.spire.game import game_from_json_file
+    from spirecomm.ai.tests.test_case.game_state_test_cases import test_cases
+    case = test_cases[1] 
+    # 创建两个不同的 processor 并使用独立的 game 副本
+    # Wrapper fix
+    if 'game_state' not in case:
+        case_wrapper = {
+            'game_state': case,
+            'available_commands': case.get('available_commands', []),
+            'in_game': case.get('in_game', True)
+        }
+        game1 = Game.from_json(case_wrapper)
+        game2 = Game.from_json(case_wrapper)
+    else:
+        game1 = Game.from_json(case)
+        game2 = Game.from_json(case)
 
-    # 加载示例游戏状态 JSON
-    game = game_from_json_file("sample_game_state.json")
+    processor1 = GameStateProcessor()
+    state1 = processor1.get_state_tensor(game1)
+    processor2 = GameStateProcessor()
+    state2 = processor2.get_state_tensor(game2)
 
-    # 创建处理器
-    processor = GameStateProcessor()
-
-    # 处理游戏状态
-    spire_state = processor.process(game)
-
-    # 输出结果形状
-    print("Global Numeric Shape:", spire_state.global_numeric.shape)
-    print("Action Mask Shape:", spire_state.action_mask.shape)
-    print("Hand IDs Shape:", spire_state.hand_ids.shape)
-    print("Hand Feats Shape:", spire_state.hand_feats.shape)
-    print("Player Numeric Shape:", spire_state.player_numeric.shape)
-    print("Monster IDs Shape:", spire_state.monster_ids.shape)
-    print("Monster Numeric Shape:", spire_state.monster_numeric.shape)
+    print("state1 hash:", game1.state_hash)
+    print("state2 hash:", game2.state_hash)
+    print("States equal:", game1 == game2)

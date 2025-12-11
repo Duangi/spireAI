@@ -47,15 +47,3 @@ class Potion:
             requires_target=json_object.get("requires_target", False),
             price=json_object.get("price", 0)
         )
-if __name__ == "__main__":
-    # 测试药水向量表示
-    potion = Potion(
-        potion_id="potion_001",
-        name="Healing Potion",
-        can_use=True,
-        can_discard=False,
-        requires_target=False
-    )
-    vec = potion.get_vector()
-    print(f"Potion Vector Shape: {vec.shape}")
-    print(vec)
