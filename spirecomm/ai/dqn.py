@@ -152,12 +152,15 @@ class DQNAgent:
         # SpireAgent.train() 使用内部配置的 batch_size
         self.dqn_algorithm.train()
 
+    def save_model(self, model_path: str):
+        """
+        保存模型
+        """
+        self.dqn_algorithm.save_model(model_path)
+
     def load_model(self, model_path: str, map_location=None):
         """
-        加载 model_path 中的 state_dict 到 policy_net（并尝试同步到 target_net）。
-        不会改变 play_mode 的值
+        加载模型
         """
-        state_dict = torch.load(model_path, map_location=map_location)
-        self.dqn_algorithm.policy_net.load_state_dict(state_dict)
-        # 尝试同步到 target_net
-        self.dqn_algorithm.update_target_net()
+        # 委托给 SpireAgent 加载，它会处理 checkpoint 格式 (model, optimizer, config)
+        self.dqn_algorithm.load_model(model_path)
