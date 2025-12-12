@@ -1,5 +1,4 @@
 from spirecomm.ai.dqn_core.algorithm import SpireAgent
-from spirecomm.ai.dqn_core.model import SpireConfig
 from spirecomm.ai.dqn_core.state import GameStateProcessor
 from spirecomm.ai.dqn_core.reward import RewardCalculator
 from spirecomm.communication.action import StartGameAction
@@ -10,6 +9,7 @@ from spirecomm.ai.tests.test_case.game_state_test_cases import test_cases
 from spirecomm.ai.dqn_core.action import DecomposedActionType
 from spirecomm.ai.dqn_core.wandb_logger import WandbLogger
 import torch
+from spirecomm.ai.dqn_core.model import SpireConfig
 
 
 class DQNAgent:
@@ -158,9 +158,45 @@ class DQNAgent:
         """
         self.dqn_algorithm.save_model(model_path)
 
-    def load_model(self, model_path: str, map_location=None):
+    def load_model(self, model_path: str):
         """
-        加载模型
+        Robust model loading: try existing algorithm loader first; on failure, try
+        torch.load fallback that handles multiple checkpoint formats and PyTorch 2.6+ safe globals.
+        返回 True 表示加载成功，否则抛出异常。
         """
-        # 委托给 SpireAgent 加载，它会处理 checkpoint 格式 (model, optimizer, config)
-        self.dqn_algorithm.load_model(model_path)
+        # 优先使用 dqn_algorithm 提供的加载逻辑
+        try:
+            return self.dqn_algorithm.load_model(model_path)
+        except Exception as primary_exc:
+            # 回退加载
+            try:
+                # 将 SpireConfig 加入 safe globals（若当前 torch 版本支持）
+                try:
+                    torch.serialization.add_safe_globals([SpireConfig])
+                except Exception:
+                    pass
+
+                device = getattr(self.dqn_algorithm, 'device', 'cpu')
+                try:
+                    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+                except TypeError:
+                    # 旧版 torch 不支持 weights_only 参数
+                    checkpoint = torch.load(model_path, map_location=device)
+
+                if isinstance(checkpoint, dict):
+                    # 常见字段名映射
+                    for key in ('model', 'state_dict', 'model_state_dict', 'policy_net', 'model_state'):
+                        if key in checkpoint:
+                            self.dqn_algorithm.policy_net.load_state_dict(checkpoint[key])
+                            break
+                    else:
+                        # 直接作为 state_dict
+                        self.dqn_algorithm.policy_net.load_state_dict(checkpoint)
+                else:
+                    # 直接保存的 state_dict
+                    self.dqn_algorithm.policy_net.load_state_dict(checkpoint)
+
+                return True
+            except Exception as fallback_exc:
+                # 将两个异常信息合并，便于排查
+                raise RuntimeError(f"无法加载模型: 主加载错误: {primary_exc}; 回退加载错误: {fallback_exc}")

@@ -31,6 +31,7 @@ class SpireAgent:
         self.last_q_values = {}
         self.total_steps = 0
         
+        
         # --- 模型初始化 ---
         self.policy_net = SpireDQN(config).to(device)
         self.target_net = SpireDQN(config).to(device)
@@ -56,6 +57,9 @@ class SpireAgent:
         # 总训练步数 = 5000 * 64 = 320,000
         # 如果使用 0.9995，约 6000 步（不到 100 局）就会降到最低温度，过快。
         # 使用 0.99999，在 300,000 步时约为 0.1 (2.0 * 0.99999^300000 ≈ 0.099)
+        self.temperature_start = 2.0
+        self.temperature = self.temperature_start
+        self.exploration_total_steps = 500000  # 计划的总探索步数
         self.temperature_decay = 0.99999
         self.is_training = True
 
@@ -118,30 +122,30 @@ class SpireAgent:
         self.memory.append((state, action, reward, next_state, done))
         self.total_steps += 1
         
-        if self.wandb_logger:
-            try:
-                # Format action string if it's an object
-                if hasattr(action, 'to_string'):
-                    action_desc = action.to_string()
-                elif isinstance(action, str):
-                    action_desc = action
-                else:
-                    action_desc = str(action)
+        # if self.wandb_logger:
+        #     try:
+        #         # Format action string if it's an object
+        #         if hasattr(action, 'to_string'):
+        #             action_desc = action.to_string()
+        #         elif isinstance(action, str):
+        #             action_desc = action
+        #         else:
+        #             action_desc = str(action)
 
-                self.wandb_logger.log_step(
-                    step_count=self.total_steps,
-                    state=state,
-                    action_desc=action_desc,
-                    q_values=self.last_q_values,
-                    reward=reward,
-                    reward_details=reward_details
-                )
+        #         self.wandb_logger.log_step(
+        #             step_count=self.total_steps,
+        #             state=state,
+        #             action_desc=action_desc,
+        #             q_values=self.last_q_values,
+        #             reward=reward,
+        #             reward_details=reward_details
+        #         )
 
-                if done:
-                    self.wandb_logger.commit_table(clear_buffer=True, step=self.total_steps)
-            except Exception as e:
-                raise RuntimeError(f"WandB Logging Error: {e}")
-                pass
+        #         if done:
+        #             self.wandb_logger.commit_table(clear_buffer=True, step=self.total_steps)
+        #     except Exception as e:
+        #         raise RuntimeError(f"WandB Logging Error: {e}")
+        #         pass
 
     # ==========================================
     # 3. 训练循环
@@ -255,12 +259,15 @@ class SpireAgent:
                 step=self.total_steps
             )
 
-        # 6. 更新温度
-        if self.temperature > self.temperature_min:
-            self.temperature *= self.temperature_decay
+        progress = min(1.0, self.total_steps / self.exploration_total_steps)
+        self.temperature = self.temperature_start - progress * (self.temperature_start - self.temperature_min)
 
-    def update_target_net(self):
-        self.target_net.load_state_dict(self.policy_net.state_dict())
+    def update_target_net(self, soft=False, tau=0.05):
+        if soft:
+            for target_param, local_param in zip(self.target_net.parameters(), self.policy_net.parameters()):
+                target_param.data.copy_(tau * local_param.data + (1 - tau) * target_param.data)
+        else:
+            self.target_net.load_state_dict(self.policy_net.state_dict())
 
     def set_inference_mode(self):
         """切换到推理模式，不进行探索。"""

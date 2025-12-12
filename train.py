@@ -1,6 +1,8 @@
 #!/opt/miniconda3/envs/spire/bin/python3
 # 使用指定的python解释器运行此脚本
 import os
+
+from spirecomm.utils.path import get_root_dir
 # --- Proxy Configuration ---
 # Explicitly set proxy for this process to ensure WandB connectivity
 # This avoids affecting global system settings or VS Code extensions
@@ -35,9 +37,7 @@ SAVE_MODEL_STEPS = 500 # 每 500 steps 保存一次模型
 MIN_MEMORY_TO_TRAIN = 200 # 经验池中至少有这么多记忆才开始训练
 TRAIN_BATCHES_PER_EPISODE = 64 # 每局游戏结束后，从经验池中采样训练的次数
 BATCH_SIZE = 32 # 每次训练时从经验池采样的大小
-# 就是 train.py 的路径
-def get_root_dir():
-    return os.path.abspath(os.path.dirname(__file__))
+
 # 从最新的模型开始训练
 def get_latest_model_agent(player_class: PlayerClass = None, wandb_logger: WandbLogger = None) -> Tuple[int,DQNAgent]:
     models_dir = os.path.join(get_root_dir(), "models")
@@ -69,7 +69,9 @@ def get_latest_model_agent(player_class: PlayerClass = None, wandb_logger: Wandb
             continue
             
     if latest_model_path:
-        agent = DQNAgent(model_path=latest_model_path, wandb_logger=wandb_logger)
+        # 先创建 agent，避免在构造函数内直接加载导致异常终止
+        agent = DQNAgent(wandb_logger=wandb_logger)
+        agent.load_model(latest_model_path)
         # 同步或初始化 steps_done 为加载的 step
         agent.steps_done = latest_step
         return latest_step, agent
@@ -86,14 +88,14 @@ def save_model_checkpoint(agent: DQNAgent, models_dir: str, current_step: int):
     try:
         os.makedirs(models_dir, exist_ok=True)
         save_path = os.path.join(models_dir, f"step_{current_step}.pth")
-        torch.save(agent.dqn_algorithm.policy_net.state_dict(), save_path)
+        agent.dqn_algorithm.save_model(save_path)
         
         log_line = (f"{datetime.now().isoformat()} 已保存模型。当前Steps={current_step}\n")
         _write_to_log_file(log_line)
 
         # 另存一份最新模型
         latest_path = os.path.join(models_dir, "latest.pth")
-        torch.save(agent.dqn_algorithm.policy_net.state_dict(), latest_path)
+        agent.dqn_algorithm.save_model(latest_path)
         return save_path, latest_path
     except Exception as e:
         return None, None
@@ -217,9 +219,11 @@ def train_all_classes(agent: DQNAgent = None, max_steps: int = MAX_STEPS, ascens
         _write_to_log_file(log_line)
         coordinator.play_one_game(chosen_class, ascension_level=ascension_level)
 
-        # 学习阶段：每局结束后多次从经验池采样训练
-        for _ in range(TRAIN_BATCHES_PER_EPISODE):
-            agent.learn(BATCH_SIZE)
+        if len(agent.dqn_algorithm.memory) > MIN_MEMORY_TO_TRAIN:
+            # 预热阶段
+            # 学习阶段：每局结束后多次从经验池采样训练
+            for _ in range(TRAIN_BATCHES_PER_EPISODE):
+                agent.learn(BATCH_SIZE)
 
         log_line = (f"learn过程结束，当前Steps={current_steps}\n")
         _write_to_log_file(log_line)
@@ -241,6 +245,7 @@ def train_all_classes(agent: DQNAgent = None, max_steps: int = MAX_STEPS, ascens
 # --- 1. 初始化 ---
 if __name__ == "__main__":
     # 初始化 WandbLogger
+    # print(get_latest_model_agent())
     wandb_logger = WandbLogger(project_name="spire-ai-train", run_name=f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
 
     # 在这里修改需要训练的角色与参数

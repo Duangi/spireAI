@@ -1,7 +1,7 @@
-import os
-
-
-def get_root_dir():
-    return os.path.abspath(os.path.dirname(__file__))
-
-print(get_root_dir())
+import re
+filename = "step_563_45_20251212_090249.pt"
+match = re.search(r'step_(\d+)', filename)
+if match:
+    print(int(match.group(1)))
+else:
+    print(float('inf'))

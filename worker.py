@@ -93,20 +93,17 @@ def get_latest_model_path(player_class=None):
         return None, 0
 
     # Logic to find the model with the highest step number
-    # Format: dqn_model_step_{step}.pth
-    model_files = [f for f in os.listdir(target_dir) if f.startswith("dqn_model_step_") and f.endswith(".pth")]
+    # Format: step_{step}.pth
+    model_files = [f for f in os.listdir(target_dir) if f.startswith("step_") and f.endswith(".pth")]
     
     latest_step = 0
     latest_model_path = None
-    
-    # Also check for dqn_model_latest.pth as a fallback or if it's the only one
-    latest_generic_path = os.path.join(target_dir, "dqn_model_latest.pth")
-    if os.path.exists(latest_generic_path) and not model_files:
-         return latest_generic_path, 0
+    if len(model_files) == 0:
+        return None, 0
 
     for f in model_files:
         try:
-            step_num = int(f[len("dqn_model_step_"):-len(".pth")])
+            step_num = int(f[len("step_"):-len(".pth")])
             if step_num > latest_step:
                 latest_step = step_num
                 latest_model_path = os.path.join(target_dir, f)
@@ -115,8 +112,6 @@ def get_latest_model_path(player_class=None):
             
     if latest_model_path:
         return latest_model_path, latest_step
-    elif os.path.exists(latest_generic_path):
-        return latest_generic_path, 0
     else:
         return None, 0
 
@@ -124,7 +119,6 @@ def run_worker():
     # Initialize WandB (optional, maybe for logging game stats)
     # os.environ["WANDB_SILENT"] = "true"
     # wandb_logger = WandbLogger(project_name="spire-ai-worker", run_name=f"Worker_{os.getpid()}")
-    
     memory_saver = MemorySaver()
     
     # Initialize Agent
@@ -142,35 +136,17 @@ def run_worker():
     
     sys.stderr.write("Worker started. Waiting for game...\n")
 
-    last_model_load_time = 0
     current_model_step = 0
     
     while True:
-        # 1. Check for new model periodically (e.g., every game or every minute)
-        # Here we check before every game
-        current_time = time.time()
-        
-        # Determine next class to play
         chosen_class = next(player_class_cycle)
-        
-        if current_time - last_model_load_time > 10: # Check every 10 seconds
-            model_path, step_num = get_latest_model_path(chosen_class)
-            if model_path:
-                try:
-                    # We can check file modification time to see if it's new
-                    # Or just check if step number is higher
-                    # For simplicity, we reload if path changed or time changed
-                    mtime = os.path.getmtime(model_path)
-                    if mtime > last_model_load_time or step_num > current_model_step:
-                        sys.stderr.write(f"Loading new model from {model_path} (Step: {step_num})...\n")
-                        agent.load_model(model_path)
-                        last_model_load_time = mtime
-                        current_model_step = step_num
-                except Exception as e:
-                    sys.stderr.write(f"Failed to load model: {e}\n")
-            else:
-                # If no model found, we just use the initialized random agent
-                pass
+        model_path, step_num = get_latest_model_path()
+        if model_path:
+            try:
+                agent.load_model(model_path)
+                current_model_step = step_num
+            except Exception as e:
+                sys.stderr.write(f"Failed to load model: {e}\n")
 
         # Update memory saver context
         memory_saver.set_context(chosen_class, current_model_step)
@@ -183,3 +159,5 @@ def run_worker():
 
 if __name__ == "__main__":
     run_worker()
+    # model_path, step = get_latest_model_path()
+    # print(f"Latest model: {model_path} at step {step}")

@@ -17,19 +17,21 @@ class RewardCalculator:
         self.state_processor = state_processor
         # --- 战斗相关奖励 ---
         # 对敌人造成伤害的奖励乘数（每1点伤害）
-        self.DAMAGE_DEALT_MULTIPLIER = 1.0
+        self.DAMAGE_DEALT_MULTIPLIER = 0.5
         # 自身受到伤害的惩罚乘数（每1点伤害）
-        self.DAMAGE_TAKEN_MULTIPLIER = -2.0 
+        self.DAMAGE_TAKEN_MULTIPLIER = -1.0
         # 新增：每个怪物死亡的固定奖励
-        self.MONSTER_DEATH_REWARD = 5.0
+        self.MONSTER_DEATH_REWARD = 10.0
+        # 赢得一场精英战斗的奖励
+        self.WIN_ELITE_MONSTER_BONUS = 150.0
         # 赢得一场普通战斗的奖励
         self.WIN_BATTLE_REWARD = 50.0
         # 输掉一场战斗的惩罚 -1000还是太高了，哥们直接不打了 原地摆烂
-        self.LOSE_BATTLE_REWARD = -10.0
+        self.LOSE_BATTLE_REWARD = -100.0
 
         # --- 资源管理奖励 ---
         # 每浪费1点能量结束回合的惩罚
-        self.WASTE_ENERGY_PENALTY = -1.0 # 降低惩罚，初期随机策略容易浪费能量
+        self.WASTE_ENERGY_PENALTY = -2.0 # 降低惩罚，初期随机策略容易浪费能量
         # 每获得1点金钱的奖励  0.1的时候战斗结束的钱都不捡了
         self.GOLD_GAINED_REWARD = 0.5
         # 每被偷1点钱的惩罚
@@ -40,21 +42,22 @@ class RewardCalculator:
         self.POTION_DISCARD_PENALTY = -5.0
 
         # 给一个赢得了战斗但是不捡金币的惩罚！浪费可耻
-        self.WIN_BATTLE_NO_GOLD_PENALTY = -1.0
+        self.WIN_BATTLE_NO_GOLD_PENALTY = -20.0
         # 赢得了战斗不捡遗物的惩罚
-        self.WIN_BATTLE_NO_RELIC_PENALTY = -5.0
+        self.WIN_BATTLE_NO_RELIC_PENALTY = -30.0
         # 赢得了战斗不捡药水的惩罚
-        self.WIN_BATTLE_NO_POTION_PENALTY = -3.0
+        self.WIN_BATTLE_NO_POTION_PENALTY = -10.0
 
         # --- 游戏进程奖励 ---
         # Act 1 (1-17层) 每提升一层的奖励
-        self.FLOOR_INCREASE_ACT1 = 10.0
+        self.FLOOR_INCREASE_ACT1 = 50.0
         # Act 2 (18-34层) 每提升一层的奖励
-        self.FLOOR_INCREASE_ACT2 = 20.0
+        self.FLOOR_INCREASE_ACT2 = 80.0
         # Act 3 (35-51层) 每提升一层的奖励
-        self.FLOOR_INCREASE_ACT3 = 30.0
+        self.FLOOR_INCREASE_ACT3 = 150.0
         # Act 4 (52-55层) 每提升一层的奖励
-        self.FLOOR_INCREASE_ACT4 = 40.0
+        self.FLOOR_INCREASE_ACT4 = 200.0
+
 
         # --- BOSS战特殊奖励 ---
         # 战胜第一幕BOSS (17层) 的额外奖励
@@ -72,7 +75,7 @@ class RewardCalculator:
         # 战斗中选择了CONFIRM时给予奖励
         self.CONFIRM_REWARD_IN_COMBAT = 2.0
         # 假设next_state和prev_prev_state完全一致的话，表示卡bug不动了，给予大大的惩罚！
-        self.STUCK_PENALTY = -50.0
+        self.STUCK_PENALTY = -1000.0
         self.stuck_count = 5
 
 
@@ -224,9 +227,6 @@ class RewardCalculator:
                 total_reward += value
                 contributions.append(("赢得最终BOSS", value, f"floor={prev_state.floor}"))
             else:
-                value = self.WIN_BATTLE_REWARD
-                total_reward += value
-                contributions.append(("赢得战斗", value, f"floor={prev_state.floor}"))
                 # 检查是否是幕BOSS战胜利
                 if prev_state.floor == 17:
                     bv = self.WIN_ACT1_BOSS_BONUS
@@ -240,6 +240,15 @@ class RewardCalculator:
                     bv = self.WIN_ACT3_BOSS_BONUS
                     total_reward += bv
                     contributions.append(("赢得第三幕BOSS奖励", bv, "floor=51"))
+                elif prev_state.room_type == "MonsterRoomElite":
+                    # 精英战斗胜利奖励
+                    bv = self.WIN_ELITE_MONSTER_BONUS
+                    total_reward += bv
+                    contributions.append(("赢得精英战斗奖励", bv, "Elite Monster Room"))
+                else:
+                    value = self.WIN_BATTLE_REWARD
+                    total_reward += value
+                    contributions.append(("赢得战斗", value, f"floor={prev_state.floor}"))
         # 输掉战斗: 游戏结束
         if prev_state.in_game and not next_state.in_game:
             value = self.LOSE_BATTLE_REWARD
@@ -303,9 +312,8 @@ class RewardCalculator:
                 # 使用药水不惩罚
                 pass
         
-        # 赢得战斗但没有捡金币的惩罚
-        if prev_state.screen_type == ScreenType.COMBAT_REWARD:
-            
+        # 赢得战斗,然后离开。没有捡金币/遗物/药水的惩罚
+        if prev_state.screen_type == ScreenType.COMBAT_REWARD and next_state.screen_type != ScreenType.COMBAT_REWARD:
             if "gold" in prev_state.choice_list:
                 # 走了但是选项里面还有金币
                 value = self.WIN_BATTLE_NO_GOLD_PENALTY

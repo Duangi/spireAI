@@ -4,7 +4,10 @@ import glob
 import shutil
 import torch
 import sys
+import re
 from datetime import datetime
+
+import wandb
 from spirecomm.ai.dqn import DQNAgent
 from spirecomm.ai.dqn_core.wandb_logger import WandbLogger
 from spirecomm.utils.path import get_root_dir
@@ -17,40 +20,49 @@ MODELS_DIR = os.path.join(get_root_dir(), "models")
 os.makedirs(MEMORY_DIR, exist_ok=True)
 os.makedirs(ARCHIVE_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
-BATCH_SIZE = 32
-MIN_MEMORY_TO_TRAIN = BATCH_SIZE*4
+BATCH_SIZE = 256
 
-SAVE_INTERVAL = BATCH_SIZE*32  # 每训练多少步保存一次模型
-TARGET_UPDATE_INTERVAL = BATCH_SIZE*4 # 每训练多少步更新一次目标网络
-TRAIN_BATCHES_PER_LOOP = BATCH_SIZE*4 # 每次循环训练多少个Batch
+SAVE_INTERVAL = 1000  # 每训练多少步保存一次模型
+TARGET_UPDATE_INTERVAL = 1000  # 每训练多少步更新一次目标网络
+RR = 8  # 根据经验池数据量动态调整训练次数的比例因子
 
-def get_latest_model_path():
-    """Find the model with the highest step number in MODELS_DIR."""
-    # 查找所有符合 dqn_model_step_{step}.pth 格式的文件
-    model_files = [f for f in os.listdir(MODELS_DIR) if f.startswith("dqn_model_step_") and f.endswith(".pth")]
+def get_latest_model_path(player_class=None):
+    target_dir = MODELS_DIR
+    if player_class:
+        class_dir = os.path.join(MODELS_DIR, player_class.name)
+        if os.path.exists(class_dir):
+            target_dir = class_dir
+            
+    if not os.path.exists(target_dir):
+        return None, 0
+
+    # Logic to find the model with the highest step number
+    # Format: step_{step}.pth
+    model_files = [f for f in os.listdir(target_dir) if f.startswith("step_") and f.endswith(".pth")]
     
-    latest_step = -1
+    latest_step = 0
     latest_model_path = None
-    
+    if len(model_files) == 0:
+        return None, 0
+
     for f in model_files:
         try:
-            # 解析文件名中的 step
-            # Format: dqn_model_step_{step}.pth
-            # split('_') -> ['dqn', 'model', 'step', '100.pth']
-            step_part = f.split('_')[3]
-            step_num = int(step_part.split('.')[0])
-            
+            step_num = int(f[len("step_"):-len(".pth")])
             if step_num > latest_step:
                 latest_step = step_num
-                latest_model_path = os.path.join(MODELS_DIR, f)
-        except (ValueError, IndexError):
+                latest_model_path = os.path.join(target_dir, f)
+        except ValueError:
             continue
             
-    return latest_model_path, latest_step
+    if latest_model_path:
+        return latest_model_path, latest_step
+    else:
+        return None, 0
 
 def run_trainer():
     # Initialize WandB
-    wandb_logger = WandbLogger(project_name="spire-ai-trainer", run_name=f"Trainer_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    if wandb.run is None:
+        wandb_logger = WandbLogger(project_name="spire-ai-trainer", run_name=f"Trainer_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
     
     # Initialize Agent
     agent = DQNAgent(play_mode=False, wandb_logger=wandb_logger)
@@ -74,24 +86,40 @@ def run_trainer():
         # 1. Scan for memory files
         # 递归查找 data/memory 下的所有 .pt 文件
         pattern = os.path.join(MEMORY_DIR, "**", "*.pt")
-        memory_files = sorted(glob.glob(pattern, recursive=True))
-        
-        if not memory_files:
+        files_steps = 0 # 读取文件的第二个数字，表示该文件对应的 step
+        # 按文件名中的 step_xxx 数字大小排序，确保先训练较早的数据
+        all_files = glob.glob(pattern, recursive=True)
+        def sort_key_by_step(filepath):
+            filename = os.path.basename(filepath)
+            match = re.search(r'step_(\d+)', filename)
+            if match:
+                return int(match.group(1))
+            return float('inf')
+        memory_files = sorted(all_files, key=sort_key_by_step)
+        batch_process_files = memory_files[:50]
+
+        if not batch_process_files:
             # 如果没有文件，稍微等待一下，避免空转占用CPU
             # print("No data files found. Waiting...", end='\r')
             time.sleep(1)
         else:
-            print(f"\nFound {len(memory_files)} data files. Processing...")
-            
+            print(f"\nFound {len(batch_process_files)} data files. Processing...")
+
             files_processed = 0
-            
-            for filepath in memory_files:
+
+            for filepath in batch_process_files:
                 try:
                     # Load data
                     # weights_only=False is required for custom objects like SpireState
                     # 我们信任 worker 产生的数据，所以这里设置为 False
                     transitions = torch.load(filepath, weights_only=False)
-                    
+                    # 文件的命名格式：step_{step}_{game_steps}_{timestamp}.pt
+                    parts = os.path.basename(filepath).split('_')
+                    if len(parts) >= 3:
+                        try:
+                            files_steps += int(parts[2])
+                        except ValueError:
+                            pass
                     # Add to replay buffer
                     for t in transitions:
                         agent.dqn_algorithm.remember(
@@ -128,28 +156,29 @@ def run_trainer():
                         pass
 
             print(f"Processed {files_processed} files. Replay buffer size: {len(agent.dqn_algorithm.memory)}")
+            print(f"Total steps from files: {files_steps}")
 
         # 2. Train
         # 只要经验池里的数据够一个 Batch，就开始训练
         # 每次循环训练一定次数，或者根据数据量动态调整
-        if len(agent.dqn_algorithm.memory) >= BATCH_SIZE:
-            # print(f"Training {TRAIN_BATCHES_PER_LOOP} batches...")
-            for _ in range(TRAIN_BATCHES_PER_LOOP):
+        if files_steps > 0 and len(agent.dqn_algorithm.memory) >= BATCH_SIZE:
+            # 根据files_steps调整训练次数，要求RR达到8
+            # 训练次数 = 新数据量 * RR / BATCH_SIZE
+            target_train_loops = max(files_steps * RR // BATCH_SIZE, 1)
+            for _ in range(target_train_loops):
                 agent.dqn_algorithm.train()
                 current_step += 1
                 
-                # Update Target Net
-                if current_step % TARGET_UPDATE_INTERVAL == 0:
-                    agent.dqn_algorithm.update_target_net()
+                agent.dqn_algorithm.update_target_net(soft=True, tau=0.005)
                 
                 # Save Model
                 if current_step % SAVE_INTERVAL == 0:
-                    save_path = os.path.join(MODELS_DIR, f"dqn_model_step_{current_step}.pth")
+                    save_path = os.path.join(MODELS_DIR, f"step_{current_step}.pth")
                     agent.save_model(save_path)
                     print(f"Saved model to {save_path}")
                     
                     # 更新 latest 副本，方便 worker 快速找到（虽然 worker 也会扫文件夹）
-                    latest_path = os.path.join(MODELS_DIR, "dqn_model_latest.pth")
+                    latest_path = os.path.join(MODELS_DIR, "latest.pth")
                     try:
                         shutil.copyfile(save_path, latest_path)
                     except Exception:
