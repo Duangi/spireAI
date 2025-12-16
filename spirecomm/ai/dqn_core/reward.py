@@ -27,7 +27,7 @@ class RewardCalculator:
         # 赢得一场普通战斗的奖励
         self.WIN_BATTLE_REWARD = 50.0
         # 输掉一场战斗的惩罚 -1000还是太高了，哥们直接不打了 原地摆烂
-        self.LOSE_BATTLE_REWARD = -100.0
+        self.LOSE_BATTLE_REWARD = -300.0
 
         # --- 资源管理奖励 ---
         # 每浪费1点能量结束回合的惩罚
@@ -75,9 +75,8 @@ class RewardCalculator:
         # 战斗中选择了CONFIRM时给予奖励
         self.CONFIRM_REWARD_IN_COMBAT = 2.0
         # 假设next_state和prev_prev_state完全一致的话，表示卡bug不动了，给予大大的惩罚！
-        self.STUCK_PENALTY = -1000.0
+        self.STUCK_PENALTY_BASE = -50.0
         self.stuck_count = 5
-
 
         self.absolute_logger = AbsoluteLogger(LogType.REWARD)
         self.absolute_logger.start_episode()
@@ -269,6 +268,7 @@ class RewardCalculator:
                 per = self.FLOOR_INCREASE_ACT3
             else: # 52层及以上
                 per = self.FLOOR_INCREASE_ACT4
+
             value = floor_change * per
             total_reward += value
             contributions.append(("层数上升", value, f"change={floor_change} * per={per} (band_based_on_floor={target_floor_for_band})"))
@@ -329,6 +329,7 @@ class RewardCalculator:
                 value = self.WIN_BATTLE_NO_POTION_PENALTY
                 total_reward += value
                 contributions.append(("战斗后药水栏没满但是没捡药水惩罚", value, f"{self.WIN_BATTLE_NO_POTION_PENALTY}"))
+        
         # --- 6. 战斗中选择动作的奖惩 ---
         
         # if prev_state.in_combat and next_state.in_combat and action is not None:
@@ -346,6 +347,7 @@ class RewardCalculator:
         # 因为需要打开选择界面来查看卡牌或者之类奖励的情况，由于卡牌不太好需要skip，此时也会导致prev_prev_state和next_state相同
         # 因此这里需要给一个卡bug的次数阈值，暂定5次，因为有一个同时选5张牌的遗物。
         # 这个次数阈值在层数变化时重置
+        
         is_stuck = False
         contributions.append(("prev_state.floor", prev_state.floor, "用于检测层数变化以重置计数器"))
         contributions.append(("next_state.floor", next_state.floor, "用于检测层数变化以重置计数器"))
@@ -366,7 +368,8 @@ class RewardCalculator:
                 is_stuck = False  # 如果比较过程中出错，视为未卡住
 
             if is_stuck:
-                value = self.STUCK_PENALTY
+                value = self.STUCK_PENALTY_BASE * (15 * (abs(self.stuck_count)))
+                value = max(value, self.LOSE_BATTLE_REWARD * 1.5)  # 防止过大,且惩罚力度要略微大于输掉游戏
                 total_reward += value
                 contributions.append(("卡bug惩罚", value, "prev_prev_state 与 next_state 关键字段完全一致"))
         # 输出每一项贡献及总和，便于定位问题

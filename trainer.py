@@ -161,10 +161,12 @@ def run_trainer():
         # 2. Train
         # 只要经验池里的数据够一个 Batch，就开始训练
         # 每次循环训练一定次数，或者根据数据量动态调整
-        if files_steps > 0 and len(agent.dqn_algorithm.memory) >= BATCH_SIZE:
+        min_steps_to_train = BATCH_SIZE // RR
+        if files_steps > min_steps_to_train and len(agent.dqn_algorithm.memory) >= BATCH_SIZE:
             # 根据files_steps调整训练次数，要求RR达到8
             # 训练次数 = 新数据量 * RR / BATCH_SIZE
             target_train_loops = max(files_steps * RR // BATCH_SIZE, 1)
+            print(f"此次训练 {target_train_loops} 次 (基于 {files_steps} 步新数据)")
             for _ in range(target_train_loops):
                 agent.dqn_algorithm.train()
                 current_step += 1

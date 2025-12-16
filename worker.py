@@ -155,7 +155,7 @@ def run_worker():
         agent.change_class(chosen_class)
         
         # Play game
-        coordinator.play_one_game(chosen_class, ascension_level=20)
+        coordinator.play_one_game(chosen_class, ascension_level=0)
 
 if __name__ == "__main__":
     run_worker()

@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from random import choice
 from spirecomm.ai.constants import (
     MAX_CHOOSE_COUNT, MAX_HAND_SIZE, MAX_MONSTER_COUNT, MAX_POTION_COUNT, 
     MAX_DECK_SIZE, MAX_ORB_COUNT, MAX_POWER_COUNT, MAX_MAP_NODE_COUNT, 
@@ -321,9 +322,19 @@ class GameStateProcessor:
         
         # choose 动作
         if game.choice_available and "choose" in game.available_commands:
-            for i, _ in enumerate(game.choice_list):
+            for i, choice in enumerate(game.choice_list):
+                # 访问过商店后不能再选 shop 了
+                if game.shop_visited and choice == "shop":  
+                    continue
+                if game.screen_type == ScreenType.GRID:
+                    # Grid 选择时，不能选择已经被选过的格子
+                    if len(game.screen.selected_cards) > 0:
+                        # 由于选择很有可能是相同的卡牌，需通过 uuid 来判断
+                        selected_cards_uuids = [c.uuid for c in game.screen.selected_cards]
+                        if game.screen.cards[i].uuid in selected_cards_uuids:
+                            continue
                 actions.append(ChooseAction(type=ActionType.CHOOSE, choice_idx=i, decomposed_type=DecomposedActionType.CHOOSE))
-
+            
         # 战斗中的动作
         if "play" in game.available_commands:
             # Play a card
@@ -367,6 +378,16 @@ class GameStateProcessor:
         if "leave" in game.available_commands:
             actions.append(SingleAction(type=ActionType.LEAVE, decomposed_type=DecomposedActionType.LEAVE))
         
+        # 以下为特殊处理：重置actions列表
+        # 当房间为COMBAT_REWARD时，直接根据奖励内容，直接要求模型必须把金币和药水先选了！这是常识，避免模型需要学很多step
+        if game.screen_type == ScreenType.COMBAT_REWARD:
+            for i, reward in enumerate(game.screen.rewards):
+                # 如果有金币，或者是药水且药水栏未满
+                if reward.reward_type == RewardType.GOLD or (reward.reward_type == RewardType.POTION and not game.are_potions_full()):
+                    # 直接只添加这些必须先选的选项
+                    actions = []
+                    actions.append(ChooseAction(type=ActionType.CHOOSE, choice_idx=i, decomposed_type=DecomposedActionType.CHOOSE))
+                    break
         return actions
     
 if __name__ == "__main__":

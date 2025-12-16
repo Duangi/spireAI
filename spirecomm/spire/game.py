@@ -99,7 +99,7 @@ class Game:
     
     screen: Screen = None # 直接在screen类里处理量化
     
-
+    shop_visited: bool = False # 不量化
     # 这些都是不量化的
     room_type: str = None # 先跳过不量化，后续知道所有房间类别之后再回来 TODO
     current_action: str = None # 不量化
