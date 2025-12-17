@@ -20,7 +20,7 @@ from spirecomm.spire.relic import Relic
 from spirecomm.spire.potion import Potion
 from spirecomm.spire.character import Player, Monster, PlayerClass
 from spirecomm.spire.map import Map, Node
-from spirecomm.spire.screen import Screen, ScreenType, RewardType
+from spirecomm.spire.screen import CombatReward, Screen, ScreenType, RewardType
 
 @dataclass
 class GameStateProcessor:
@@ -333,8 +333,25 @@ class GameStateProcessor:
                         selected_cards_uuids = [c.uuid for c in game.screen.selected_cards]
                         if game.screen.cards[i].uuid in selected_cards_uuids:
                             continue
+                # 药水相关：
+                if game.are_potions_full():
+                    # 这里是假设有除了combat_reward以外的choose选项会有potion
+                    if choice == "potion":
+                        continue
+                    if game.screen_type == ScreenType.COMBAT_REWARD:
+                        reward = game.screen.rewards[i]
+                        if reward.reward_type == RewardType.POTION:
+                            continue
+                    if game.screen_type == ScreenType.SHOP_SCREEN:
+                        # 商店里买药水时，药水栏满了也不能买
+                        potion_names = set()
+                        for potion in game.screen.potions:
+                            potion_names.add(potion.name)
+                        if choice in potion_names:
+                            continue
+                    
                 actions.append(ChooseAction(type=ActionType.CHOOSE, choice_idx=i, decomposed_type=DecomposedActionType.CHOOSE))
-            
+
         # 战斗中的动作
         if "play" in game.available_commands:
             # Play a card

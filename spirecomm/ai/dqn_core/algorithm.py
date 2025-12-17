@@ -53,7 +53,7 @@ class SpireAgent:
         self.gamma = 0.99
         self.temperature_min = 0.1
 
-        self.temperature_start = 1.77
+        self.temperature_start = 1.745
         self.temperature = self.temperature_start
         self.exploration_total_steps = 400000  # 计划的总探索步数
         self.temperature_decay = 0.99999
@@ -382,64 +382,6 @@ class SpireAgent:
             except Exception as e:
                 self.last_q_values = {}
         # -------------------------------------
-
-        # 判断药水是否满了
-        # 如果状态里面的choice_list有potion字段的话，把对应的index选出来，mask置为false，满了选不了药水
-        if "choose" in game_state_obj.available_commands:
-            sys.stderr.write(f"available_commands: {game_state_obj.available_commands}\n")
-            sys.stderr.write(f"screen_type: {game_state_obj.screen_type}\n")
-            sys.stderr.write(f"are_potions_full: {game_state_obj.are_potions_full()}\n")
-            if hasattr(game_state_obj.screen, 'potions'):
-                for potion in game_state_obj.screen.potions:
-                    sys.stderr.write(f"Potion in shop: {potion.name}\n")
-            for potion in game_state_obj.potions:
-                sys.stderr.write(f"Potion in inventory: {potion.name}\n")
-            # 判断当前是否是商店页面，且药水栏满了而且钱够买药水
-            if game_state_obj.screen_type == ScreenType.SHOP_SCREEN and game_state_obj.are_potions_full():
-                # 收集所有需要屏蔽掉的name (使用 set 加速查找)
-                potion_names = set()
-                if hasattr(game_state_obj.screen, 'potions'):
-                    for potion in game_state_obj.screen.potions:
-                        potion_names.add(potion.name)
-                
-                # 遍历 choice_list，如果名字在 potion_names 中，则屏蔽
-                # 这种方式可以正确处理商店中有多个同名药水的情况
-                if hasattr(game_state_obj, 'choice_list'):
-                    for idx, choice_name in enumerate(game_state_obj.choice_list):
-                        if choice_name in potion_names:
-                            masks['choose_option'][idx] = 0
-
-                # 如果除了药水之外没有别的选项了，就把choose_option全屏蔽
-                choose_mask = masks['choose_option']
-                # np底层优化过的函数，判断非零元素个数，比sum快 且更准确
-                if np.count_nonzero(choose_mask) == 0: 
-                    masks['action_type'][DecomposedActionType.CHOOSE.value] = 0
-
-                # 输出药水和mask情况：
-                sys.stderr.write(f"当前药水情况：{game_state_obj.screen.potions}\n")
-                sys.stderr.write(f"当前选择列表：{game_state_obj.choice_list}\n")
-                sys.stderr.write(f"应用后的 choose_option mask：{masks['choose_option']}\n")
-                sys.stderr.write(f"应用后的 action_type mask：{masks['action_type']}\n")
-
-
-            # potion_idxs = self.choose_index_based_name(game_state.choice_list, 'potion')
-            potion_idxs = [i for i, choice in enumerate(game_state_obj.choice_list) if choice == 'potion'] if hasattr(game_state_obj, 'choice_list') else []
-            sys.stderr.write(f"Detected potion choice indices: {potion_idxs}\n")
-            if potion_idxs and game_state_obj.are_potions_full():
-                # 可能同时有好几个药水选项
-                for potion_idx in potion_idxs:
-                    masks['choose_option'][potion_idx] = 0  # 不能选药水了
-                # 如果除了药水之外没有别的选项了，就把choose_option全屏蔽
-                choose_mask = masks['choose_option']
-                # np底层优化过的函数，判断非零元素个数，比sum快 且更准确
-                if np.count_nonzero(choose_mask) == 0: 
-                    masks['action_type'][DecomposedActionType.CHOOSE.value] = 0
-
-                # 输出药水和mask情况：
-                sys.stderr.write(f"当前药水情况：{potion_idxs}\n")
-                sys.stderr.write(f"当前选择列表：{game_state_obj.choice_list}\n")
-                sys.stderr.write(f"应用后的 choose_option mask：{masks['choose_option']}\n")
-                sys.stderr.write(f"应用后的 action_type mask：{masks['action_type']}\n")
 
         # 应用 Mask
         action_type_mask = torch.from_numpy(masks['action_type']).bool().to(self.device)
