@@ -53,7 +53,7 @@ class SpireAgent:
         self.gamma = 0.99
         self.temperature_min = 0.1
 
-        self.temperature_start = 1.745
+        self.temperature_start = 1.675
         self.temperature = self.temperature_start
         self.exploration_total_steps = 400000  # 计划的总探索步数
         self.temperature_decay = 0.99999

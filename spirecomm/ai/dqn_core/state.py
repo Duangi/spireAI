@@ -400,7 +400,7 @@ class GameStateProcessor:
         if game.screen_type == ScreenType.COMBAT_REWARD:
             for i, reward in enumerate(game.screen.rewards):
                 # 如果有金币，或者是药水且药水栏未满
-                if reward.reward_type == RewardType.GOLD or (reward.reward_type == RewardType.POTION and not game.are_potions_full()):
+                if reward.reward_type == RewardType.GOLD or (reward.reward_type == RewardType.POTION and not game.are_potions_full()) or reward.reward_type == RewardType.RELIC or reward.reward_type == RewardType.STOLEN_GOLD:
                     # 直接只添加这些必须先选的选项
                     actions = []
                     actions.append(ChooseAction(type=ActionType.CHOOSE, choice_idx=i, decomposed_type=DecomposedActionType.CHOOSE))
