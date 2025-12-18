@@ -31,7 +31,16 @@ class SpireAgent:
         self.wandb_logger = wandb_logger
         self.last_q_values = {}
         self.total_steps = 0
-        
+        # 训练速度统计：60s 窗口 + 1h 窗口
+        self._velocity_last_time = None
+        self._velocity_last_step = 0
+        self._velocity_last_flush_time = None
+        self._velocity_last_flush_step = 0
+        self._hour_last_time = None
+        self._hour_last_step = 0
+        # 训练速度统计：记录最近一次统计的 wall-clock 时间与 step
+        self.last_train_time = None
+        self.last_episodes = None
         
         # --- 模型初始化 ---
         self.policy_net = SpireDQN(config).to(device)
@@ -53,7 +62,7 @@ class SpireAgent:
         self.gamma = 0.99
         self.temperature_min = 0.1
 
-        self.temperature_start = 1.675
+        self.temperature_start = 1.664
         self.temperature = self.temperature_start
         self.exploration_total_steps = 400000  # 计划的总探索步数
         self.temperature_decay = 0.99999
@@ -251,6 +260,47 @@ class SpireAgent:
 
             loss_to_log = loss.item() if torch.isfinite(loss) else 0.0
 
+            # 训练速度：按固定窗口统计（更平滑）
+            now_time = datetime.datetime.now()
+            steps_per_min = 0.0
+            steps_per_hour = 0.0
+
+            try:
+                # 初始化
+                if self._velocity_last_time is None:
+                    self._velocity_last_time = now_time
+                    self._velocity_last_step = self.total_steps
+                    self._velocity_last_flush_time = now_time
+                    self._velocity_last_flush_step = self.total_steps
+                    self._hour_last_time = now_time
+                    self._hour_last_step = self.total_steps
+                else:
+                    # ---- 60 秒窗口：每满 60 秒更新一次 steps/min ----
+                    if self._velocity_last_flush_time is not None:
+                        flush_diff = (now_time - self._velocity_last_flush_time).total_seconds()
+                        if flush_diff >= 60.0:
+                            step_diff = self.total_steps - self._velocity_last_flush_step
+                            if flush_diff > 0 and step_diff >= 0:
+                                steps_per_min = (step_diff / flush_diff) * 60.0
+
+                            # 滚动 60s 窗口起点
+                            self._velocity_last_flush_time = now_time
+                            self._velocity_last_flush_step = self.total_steps
+
+                    # ---- 1 小时窗口：每满 3600 秒更新一次 steps/hour（过去一小时总 step 数） ----
+                    if self._hour_last_time is not None:
+                        hour_diff = (now_time - self._hour_last_time).total_seconds()
+                        if hour_diff >= 3600.0:
+                            hour_step_diff = self.total_steps - self._hour_last_step
+                            if hour_step_diff >= 0:
+                                steps_per_hour = float(hour_step_diff)
+
+                            # 滚动 1h 窗口起点
+                            self._hour_last_time = now_time
+                            self._hour_last_step = self.total_steps
+            except Exception:
+                pass
+
             self.wandb_logger.log_metrics(
                 {
                     "loss": loss_to_log,
@@ -263,9 +313,14 @@ class SpireAgent:
                     "bad_target_q_count": targ_bad,
                     "dropped_td_pairs": dropped,
                     "did_optimizer_step": 1 if did_step else 0,
+                    "train/steps_per_min": float(steps_per_min),
+                    "train/steps_per_hour": float(steps_per_hour),
                 },
                 step=self.total_steps
             )
+            now_time = datetime.datetime.now()
+            self.last_episodes = self.total_steps
+            self.last_train_time = now_time
 
         progress = min(1.0, self.total_steps / self.exploration_total_steps)
         self.temperature = self.temperature_start - progress * (self.temperature_start - self.temperature_min)
@@ -409,9 +464,94 @@ class SpireAgent:
                 # print("Warning: All actions masked! Forcing END.")
                 action_type_mask[DecomposedActionType.END.value] = True
 
+        # 先记录 available_commands（你要求在动作选择时输出）
+        ava_commands = getattr(game_state_obj, 'available_commands', None)
+        self.absolute_logger.write(f"Available Commands: {ava_commands}\n")
+
+        # 如果在战斗中：输出能量、怪物血量、意图/攻击
+        try:
+            in_combat = bool(getattr(game_state_obj, 'in_combat', False))
+            room_phase = getattr(game_state_obj, 'room_phase', None)
+            if room_phase is not None:
+                try:
+                    # RoomPhase.COMBAT
+                    in_combat = in_combat or (getattr(room_phase, 'name', None) == 'COMBAT')
+                except Exception:
+                    pass
+
+            if in_combat:
+                # 能量：优先用 player.energy（在 Game 里更稳定）
+                energy = None
+                if hasattr(game_state_obj, 'player') and getattr(game_state_obj.player, 'energy', None) is not None:
+                    energy = game_state_obj.player.energy
+                else:
+                    for attr in ('energy', 'current_energy', 'player_energy'):
+                        if hasattr(game_state_obj, attr):
+                            energy = getattr(game_state_obj, attr)
+                            break
+
+                self.absolute_logger.write(f"[Combat] Energy: {energy}\n")
+
+                # 怪物信息
+                monsters = getattr(game_state_obj, 'monsters', []) or []
+                self.absolute_logger.write(f"[Combat] Monsters: {len(monsters)}\n")
+
+                for mi, m in enumerate(monsters):
+                    try:
+                        m_name = getattr(m, 'name', f"Monster_{mi}")
+                        m_hp = getattr(m, 'current_hp', None)
+                        m_max = getattr(m, 'max_hp', None)
+
+                        # intent：Monster.intent 是 Intent Enum
+                        intent = getattr(m, 'intent', None)
+                        intent_name = None
+                        try:
+                            intent_name = intent.name if intent is not None and hasattr(intent, 'name') else str(intent)
+                        except Exception:
+                            intent_name = str(intent)
+
+                        # 攻击信息：使用 Monster.move_adjusted_damage / move_base_damage / move_hits
+                        dmg = None
+                        hits = None
+
+                        if getattr(m, 'move_adjusted_damage', None) is not None:
+                            dmg = m.move_adjusted_damage
+                        elif getattr(m, 'move_base_damage', None) is not None:
+                            dmg = m.move_base_damage
+
+                        hits = getattr(m, 'move_hits', None)
+
+                        # intent 是攻击类时，优先输出攻击；否则也把 intent 打出来
+                        is_attack_intent = False
+                        try:
+                            is_attack_intent = bool(intent is not None and hasattr(intent, 'is_attack') and intent.is_attack())
+                        except Exception:
+                            # 有的 intent 可能没有 is_attack
+                            is_attack_intent = False
+
+                        if is_attack_intent and dmg is not None:
+                            if hits is not None and int(hits) > 1:
+                                self.absolute_logger.write(f"[Combat]  - {mi}:{m_name} HP={m_hp}/{m_max} Intent={intent_name} ATK={int(dmg)}x{int(hits)}\n")
+                            else:
+                                self.absolute_logger.write(f"[Combat]  - {mi}:{m_name} HP={m_hp}/{m_max} Intent={intent_name} ATK={int(dmg)}\n")
+                        else:
+                            # 非攻击或未知攻击值：只输出意图
+                            self.absolute_logger.write(f"[Combat]  - {mi}:{m_name} HP={m_hp}/{m_max} Intent={intent_name}\n")
+
+                    except Exception as e:
+                        self.absolute_logger.write(f"[Combat]  - monster[{mi}] parse failed: {e}\n")
+        except Exception:
+            # 如果拿不到字段，也别影响选动作
+            pass
+
+        # 保存一份未 mask 的 q_type 用于调试显示（不影响后续逻辑）
+        raw_q_type = q_type.detach().clone()
+
+        # 应用 action_type mask
         q_type[~action_type_mask] = -float('inf')
-        
+
         # --- 动作类型选择 ---
+        probs = None
         if self.is_training:
             probs = torch.softmax(q_type / self.temperature, dim=-1)
             # 二次检查：防止 probs 含有 NaN (例如 q_type 全是 -inf)
@@ -422,10 +562,38 @@ class SpireAgent:
             
             act_idx = torch.multinomial(probs, 1).item()
         else:
+            # 推理模式下也算一份 probs 方便日志阅读
+            probs = torch.softmax(q_type / max(self.temperature, 1e-6), dim=-1)
+            if torch.isnan(probs).any() or probs.sum() == 0:
+                probs = torch.zeros_like(probs)
+                probs[action_type_mask] = 1.0 / action_type_mask.sum().float()
             act_idx = torch.argmax(q_type).item()
-            
+
         action_type = DecomposedActionType(act_idx)
-        
+
+        # --- 输出：mask 后每个动作的 Q 值与概率 ---
+        try:
+            q_type_cpu = q_type.detach().float().cpu().numpy().tolist()
+            probs_cpu = probs.detach().float().cpu().numpy().tolist() if probs is not None else None
+            mask_cpu = action_type_mask.detach().cpu().numpy().astype(bool).tolist()
+
+            self.absolute_logger.write("[ActionType] After mask: Q / Prob (mask=1 only)\n")
+            for i in range(len(q_type_cpu)):
+                m = bool(mask_cpu[i]) if i < len(mask_cpu) else False
+                if not m:
+                    continue
+
+                try:
+                    name = DecomposedActionType(i).name
+                except Exception:
+                    name = f"Type_{i}"
+
+                qv = q_type_cpu[i]
+                pv = probs_cpu[i] if (probs_cpu is not None and i < len(probs_cpu)) else 0.0
+                self.absolute_logger.write(f"  - {name:<16} masked_q={qv:.6f} prob={pv:.6f}\n")
+        except Exception as e:
+            self.absolute_logger.write(f"[ActionType] Log failed: {e}\n")
+
         # --- 分支参数选择 ---
         # 辅助函数: 根据温度采样
         def select_idx(q_vals, mask_key):
@@ -437,15 +605,63 @@ class SpireAgent:
                 # Pad mask with False
                 padding = torch.zeros(len(q_vals) - len(mask), dtype=torch.bool, device=self.device)
                 mask = torch.cat([mask, padding])
-                
+
             q_vals[~mask] = -float('inf')
-            
+
+            # 计算概率（用于输出）
+            p = torch.softmax(q_vals / max(self.temperature, 1e-6), dim=-1)
+            if torch.isnan(p).any() or p.sum() == 0:
+                p = torch.zeros_like(p)
+                if mask.any():
+                    p[mask] = 1.0 / mask.sum().float()
+
+            # 输出该分支的 Q 与概率（只输出 mask=1，并额外输出名称）
+            try:
+                q_cpu = q_vals.detach().float().cpu().numpy().tolist()
+                p_cpu = p.detach().float().cpu().numpy().tolist()
+                m_cpu = mask.detach().cpu().numpy().astype(bool).tolist()
+
+                # 名称解析
+                def _name_for_idx(idx: int) -> str:
+                    try:
+                        if mask_key == 'play_card':
+                            if hasattr(game_state_obj, 'hand') and idx < len(game_state_obj.hand):
+                                return str(getattr(game_state_obj.hand[idx], 'name', f"Card_{idx}"))
+                            return f"Card_{idx}"
+                        if mask_key == 'target_monster':
+                            if hasattr(game_state_obj, 'monsters') and idx < len(game_state_obj.monsters):
+                                return str(getattr(game_state_obj.monsters[idx], 'name', f"Monster_{idx}"))
+                            return f"Monster_{idx}"
+                        if mask_key == 'choose_option':
+                            if hasattr(game_state_obj, 'choice_list') and idx < len(game_state_obj.choice_list):
+                                return str(game_state_obj.choice_list[idx])
+                            return f"Choice_{idx}"
+                        if mask_key == 'potion_use' or mask_key == 'potion_discard':
+                            if hasattr(game_state_obj, 'potions') and idx < len(game_state_obj.potions):
+                                return str(getattr(game_state_obj.potions[idx], 'name', f"Potion_{idx}"))
+                            return f"Potion_{idx}"
+                    except Exception:
+                        pass
+                    return f"idx_{idx}"
+
+                self.absolute_logger.write(f"[{mask_key}] After mask: Q / Prob (mask=1 only)\n")
+                for i in range(len(q_cpu)):
+                    m = bool(m_cpu[i]) if i < len(m_cpu) else False
+                    if not m:
+                        continue
+                    qv = q_cpu[i]
+                    pv = p_cpu[i] if i < len(p_cpu) else 0.0
+                    nm = _name_for_idx(i)
+                    self.absolute_logger.write(f"  - idx={i:<2} name={nm} masked_q={qv:.6f} prob={pv:.6f}\n")
+            except Exception as e:
+                self.absolute_logger.write(f"[{mask_key}] Log failed: {e}\n")
+
             if self.is_training:
-                p = torch.softmax(q_vals / self.temperature, dim=-1)
                 return torch.multinomial(p, 1).item()
             else:
                 return torch.argmax(q_vals).item()
 
+        # 
         # 根据类型组装 Action 对象
         if action_type == DecomposedActionType.PLAY:
             hand_idx = select_idx(q_card, 'play_card')
@@ -455,8 +671,18 @@ class SpireAgent:
             card = game_state_obj.hand[hand_idx]
             if card.has_target:
                 target_idx = select_idx(q_monster, 'target_monster')
-                
-            return PlayAction(ActionType.PLAY, hand_idx, target_idx)
+
+            act = PlayAction(ActionType.PLAY, hand_idx, target_idx)
+            # 输出最终动作
+            try:
+                card_name = game_state_obj.hand[hand_idx].name if hand_idx < len(game_state_obj.hand) else str(hand_idx)
+                tgt_name = None
+                if target_idx is not None:
+                    tgt_name = game_state_obj.monsters[target_idx].name if target_idx < len(game_state_obj.monsters) else str(target_idx)
+                self.absolute_logger.write(f"[SelectedAction] {act.decomposed_type.name} card_idx={hand_idx} card={card_name} target_idx={target_idx} target={tgt_name}\n\n")
+            except Exception:
+                self.absolute_logger.write(f"[SelectedAction] {act.decomposed_type.name} card_idx={hand_idx} target_idx={target_idx}\n\n")
+            return act
             
         elif action_type == DecomposedActionType.CHOOSE:
             # 检查是否是 Shop 进入逻辑
@@ -466,21 +692,46 @@ class SpireAgent:
                 pass
             
             choice_idx = select_idx(q_choice, 'choose_option')
-            return ChooseAction(ActionType.CHOOSE, choice_idx)
+            act = ChooseAction(ActionType.CHOOSE, choice_idx)
+            try:
+                choice_name = None
+                if hasattr(game_state_obj, 'choice_list') and choice_idx < len(game_state_obj.choice_list):
+                    choice_name = str(game_state_obj.choice_list[choice_idx])
+                self.absolute_logger.write(f"[SelectedAction] {act.decomposed_type.name} choice_idx={choice_idx} choice={choice_name}\n\n")
+            except Exception:
+                self.absolute_logger.write(f"[SelectedAction] {act.decomposed_type.name} choice_idx={choice_idx}\n\n")
+            return act
             
         elif action_type == DecomposedActionType.POTION_USE:
             pot_idx = select_idx(q_pot_use, 'potion_use')
             target_idx = None
             if game_state_obj.potions[pot_idx].requires_target:
                 target_idx = select_idx(q_monster, 'target_monster')
-            return PotionUseAction(ActionType.POTION_USE, pot_idx, target_idx)
+            act = PotionUseAction(ActionType.POTION_USE, pot_idx, target_idx)
+            try:
+                pot_name = game_state_obj.potions[pot_idx].name if pot_idx < len(game_state_obj.potions) else str(pot_idx)
+                tgt_name = None
+                if target_idx is not None:
+                    tgt_name = game_state_obj.monsters[target_idx].name if target_idx < len(game_state_obj.monsters) else str(target_idx)
+                self.absolute_logger.write(f"[SelectedAction] {act.decomposed_type.name} pot_idx={pot_idx} pot={pot_name} target_idx={target_idx} target={tgt_name}\n\n")
+            except Exception:
+                self.absolute_logger.write(f"[SelectedAction] {act.decomposed_type.name} pot_idx={pot_idx} target_idx={target_idx}\n\n")
+            return act
             
         elif action_type == DecomposedActionType.POTION_DISCARD:
             pot_idx = select_idx(q_pot_disc, 'potion_discard')
-            return PotionDiscardAction(ActionType.POTION_DISCARD, pot_idx)
+            act = PotionDiscardAction(ActionType.POTION_DISCARD, pot_idx)
+            try:
+                pot_name = game_state_obj.potions[pot_idx].name if pot_idx < len(game_state_obj.potions) else str(pot_idx)
+                self.absolute_logger.write(f"[SelectedAction] {act.decomposed_type.name} pot_idx={pot_idx} pot={pot_name}\n\n")
+            except Exception:
+                self.absolute_logger.write(f"[SelectedAction] {act.decomposed_type.name} pot_idx={pot_idx}\n\n")
+            return act
             
         else:
             # End, Proceed, etc.
             base_type = action_type.to_action_type()
             from spirecomm.ai.dqn_core.action import SingleAction
-            return SingleAction(base_type, decomposed_type=action_type)
+            act = SingleAction(base_type, decomposed_type=action_type)
+            self.absolute_logger.write(f"[SelectedAction] {act.decomposed_type.name}\n\n")
+            return act

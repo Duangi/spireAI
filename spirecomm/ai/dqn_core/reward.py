@@ -31,15 +31,15 @@ class RewardCalculator:
 
         # --- 资源管理奖励 ---
         # 每浪费1点能量结束回合的惩罚
-        self.WASTE_ENERGY_PENALTY = -2.0 # 降低惩罚，初期随机策略容易浪费能量
+        self.WASTE_ENERGY_PENALTY = -3.0 # 降低惩罚，初期随机策略容易浪费能量
         # 每获得1点金钱的奖励  0.1的时候战斗结束的钱都不捡了
         self.GOLD_GAINED_REWARD = 0.5
         # 每被偷1点钱的惩罚
         self.GOLD_STOLEN_PENALTY = -0.5
         # 每获得一瓶药水的奖励
         self.POTION_GAINED_REWARD = 5.0
-        # 每失去一瓶药水的惩罚
-        self.POTION_DISCARD_PENALTY = -5.0
+        # 每失去一瓶药水的惩罚 逻辑是，药水一般能决定一把游戏的胜负，所以惩罚力度要大一些，但是又不能太大以至于比赢得战斗还重
+        self.POTION_DISCARD_PENALTY = -30.0
 
         # 给一个赢得了战斗但是不捡金币的惩罚！浪费可耻
         self.WIN_BATTLE_NO_GOLD_PENALTY = -20.0
