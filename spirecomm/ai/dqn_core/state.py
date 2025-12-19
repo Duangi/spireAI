@@ -371,17 +371,21 @@ class GameStateProcessor:
             actions.append(SingleAction(type=ActionType.END, decomposed_type=DecomposedActionType.END))
 
         if "potion" in game.available_commands:
-                for potion_idx, potion in enumerate(game.potions):
-                    if potion.can_use:
-                        if potion.requires_target:
-                            for monster_idx, monster in enumerate(game.monsters):
-                                if not monster.is_gone:
-                                    # 药水索引是它在药水栏中的位置
-                                    actions.append(PotionUseAction(type=ActionType.POTION_USE, potion_idx=potion_idx, target_idx=monster_idx, decomposed_type=DecomposedActionType.POTION_USE))
-                        else:
-                            actions.append(PotionUseAction(type=ActionType.POTION_USE, potion_idx=potion_idx, target_idx=None, decomposed_type=DecomposedActionType.POTION_USE))
-                    if potion.can_discard:
-                        actions.append(PotionDiscardAction(type=ActionType.POTION_DISCARD, potion_idx=potion_idx, decomposed_type=DecomposedActionType.POTION_DISCARD))
+            for potion_idx, potion in enumerate(game.potions):
+                if potion.can_use:
+                    # 避免同时使用多个卡牌相关的药水导致卡页面
+                    if game.in_combat and game.screen_type == ScreenType.CARD_REWARD:
+                        # 在游戏中出现的卡牌奖励页面时，不能使用药水，先把牌选了再说！
+                        continue
+                    if potion.requires_target:
+                        for monster_idx, monster in enumerate(game.monsters):
+                            if not monster.is_gone:
+                                # 药水索引是它在药水栏中的位置
+                                actions.append(PotionUseAction(type=ActionType.POTION_USE, potion_idx=potion_idx, target_idx=monster_idx, decomposed_type=DecomposedActionType.POTION_USE))
+                    else:
+                        actions.append(PotionUseAction(type=ActionType.POTION_USE, potion_idx=potion_idx, target_idx=None, decomposed_type=DecomposedActionType.POTION_USE))
+                if potion.can_discard:
+                    actions.append(PotionDiscardAction(type=ActionType.POTION_DISCARD, potion_idx=potion_idx, decomposed_type=DecomposedActionType.POTION_DISCARD))
         # 非战斗中的通用动作
         # 正确的判断方式是检查 available_commands
         if "confirm" in game.available_commands:
