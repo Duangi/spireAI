@@ -709,11 +709,7 @@ class SpireAgent:
             if game_state_obj.potions[pot_idx].requires_target:
                 target_idx = select_idx(q_monster, 'target_monster')
             act = PotionUseAction(ActionType.POTION_USE, pot_idx, target_idx)
-            # bug处理：动画大于一切导致的：使用混沌药水之后，药水栏虽然满了，但是数据中显示没满导致的买药失败并卡住的bug
-            # 判断用掉的药水是不是混沌药水
-            if game_state_obj.potions[pot_idx].name == "混沌药水":
-                # 睡一秒等动画执行完
-                time.sleep(1)
+            
             try:
                 pot_name = game_state_obj.potions[pot_idx].name if pot_idx < len(game_state_obj.potions) else str(pot_idx)
                 tgt_name = None

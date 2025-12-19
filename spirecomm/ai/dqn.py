@@ -1,3 +1,4 @@
+import time
 from spirecomm.ai.dqn_core.algorithm import SpireAgent
 from spirecomm.ai.dqn_core.state import GameStateProcessor
 from spirecomm.ai.dqn_core.reward import RewardCalculator
@@ -89,6 +90,15 @@ class DQNAgent:
         # SpireAgent.choose_action 需要 masks 参数
         chosen_action = self.dqn_algorithm.choose_action(current_state_tensor, masks, game_state)
         
+        # bug处理：动画大于一切导致的：使用混沌药水之后，药水栏虽然满了，但是数据中显示没满导致的买药失败并卡住的bug
+        # 判断上一个动作是否为用掉混沌药水
+        is_previous_action_chaos_potion = False
+        if self.previous_action.type == DecomposedActionType.POTION_USE:
+            pot_idx = self.previous_action.potion_idx
+            if self.previous_game_state.potions[pot_idx].name == "混沌药水":
+                # 睡一秒等动画执行完
+                time.sleep(1)
+                is_previous_action_chaos_potion = True
 
         # --- 为下一步做准备 ---
         # 存储当前的状态和动作用于下一次学习
@@ -102,7 +112,9 @@ class DQNAgent:
         # 核心改动：协调器需要的是一个可执行的字符串命令，而不是我们的内部动作对象。
         # 我们调用 to_string() 方法将其转换。
         action_string = chosen_action.to_string()
-        
+        if is_previous_action_chaos_potion:
+            # 如果上一个动作是用掉混沌药水，睡一秒等动画执行完
+            return "state"
         return action_string
 
     def get_next_action_out_of_game(self, final_game_state=None):
