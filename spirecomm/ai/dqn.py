@@ -93,12 +93,13 @@ class DQNAgent:
         # bug处理：动画大于一切导致的：使用混沌药水之后，药水栏虽然满了，但是数据中显示没满导致的买药失败并卡住的bug
         # 判断上一个动作是否为用掉混沌药水
         is_previous_action_chaos_potion = False
-        if self.previous_action.type == DecomposedActionType.POTION_USE:
-            pot_idx = self.previous_action.potion_idx
-            if self.previous_game_state.potions[pot_idx].name == "混沌药水":
-                # 睡一秒等动画执行完
-                time.sleep(1)
-                is_previous_action_chaos_potion = True
+        if self.previous_action:
+            if self.previous_action.type == DecomposedActionType.POTION_USE:
+                pot_idx = self.previous_action.potion_idx
+                if self.previous_game_state.potions[pot_idx].name == "混沌药水":
+                    # 睡一秒等动画执行完
+                    time.sleep(1)
+                    is_previous_action_chaos_potion = True
 
         # --- 为下一步做准备 ---
         # 存储当前的状态和动作用于下一次学习
