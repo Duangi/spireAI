@@ -120,10 +120,6 @@ class Coordinator:
         :type message: str
         :return: None
         """
-        # 在此处添加日志记录，记录所有即将发送的指令
-        with open('sent_commands.txt', 'a', encoding='utf-8') as f:
-            f.write(message + '\n')
-
         self.output_queue.put(message)
         self.game_is_ready = False
 
