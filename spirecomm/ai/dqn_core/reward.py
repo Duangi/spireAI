@@ -39,7 +39,9 @@ class RewardCalculator:
         # 每获得一瓶药水的奖励
         self.POTION_GAINED_REWARD = 5.0
         # 每失去一瓶药水的惩罚 逻辑是，药水一般能决定一把游戏的胜负，所以惩罚力度要大一些，但是又不能太大以至于比赢得战斗还重
-        self.POTION_DISCARD_PENALTY = -30.0
+        self.POTION_DISCARD_PENALTY = -10.0
+        self.POTION_USE_PENALTY = -10.0
+        self.POTION_USE_BONUS = 5.0
 
         # 给一个赢得了战斗但是不捡金币的惩罚！浪费可耻
         self.WIN_BATTLE_NO_GOLD_PENALTY = -20.0
@@ -309,9 +311,22 @@ class RewardCalculator:
                     total_reward += value
                     contributions.append(("除了战斗奖励界面和商店界面丢弃药水 给予惩罚", value, f"{self.POTION_DISCARD_PENALTY}"))
             elif action.decomposed_type == DecomposedActionType.POTION_USE:
-                # 使用药水不惩罚
-                pass
-        
+                if prev_state.room_type == "MonsterRoom":
+                    # 在普通房间使用药水给惩罚
+                    value = self.POTION_USE_PENALTY
+                    total_reward += value
+                    contributions.append(("在普通房间使用药水惩罚", value, f"{self.POTION_USE_PENALTY}"))
+                if prev_state.room_type == "MonsterRoomElite":
+                    # 在精英房间使用药水给奖励
+                    value = self.POTION_USE_BONUS
+                    total_reward += value
+                    contributions.append(("在精英房间使用药水奖励", value, f"{self.POTION_USE_BONUS}"))
+                # 在boss房间使用给更多奖励
+                if prev_state.room_type == "MonsterRoomBoss":
+                    value = self.POTION_USE_BONUS * 2
+                    total_reward += value
+                    contributions.append(("在boss房间使用药水奖励", value, f"{self.POTION_USE_BONUS * 2}"))
+
         # 赢得战斗,然后离开。没有捡金币/遗物/药水的惩罚
         if prev_state.screen_type == ScreenType.COMBAT_REWARD and next_state.screen_type != ScreenType.COMBAT_REWARD:
             if "gold" in prev_state.choice_list:
