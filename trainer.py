@@ -14,10 +14,12 @@ from spirecomm.utils.path import get_root_dir
 
 # --- Configuration ---
 MEMORY_DIR = os.path.join(get_root_dir(), "data", "memory")
+MEMORY_REMOTE_DIR = os.path.join(get_root_dir(), "data", "memory_remote")
 ARCHIVE_DIR = os.path.join(get_root_dir(), "data", "archive")
 MODELS_DIR = os.path.join(get_root_dir(), "models")
 
 os.makedirs(MEMORY_DIR, exist_ok=True)
+os.makedirs(MEMORY_REMOTE_DIR, exist_ok=True)
 os.makedirs(ARCHIVE_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
 BATCH_SIZE = 256
@@ -80,15 +82,19 @@ def run_trainer():
 
     print(f"Trainer started. Current Step: {current_step}")
     print(f"Monitoring {MEMORY_DIR} for new data...")
+    print(f"Monitoring {MEMORY_REMOTE_DIR} for new data...")
     
     # Main Loop
     while True:
         # 1. Scan for memory files
-        # 递归查找 data/memory 下的所有 .pt 文件
-        pattern = os.path.join(MEMORY_DIR, "**", "*.pt")
+        # 递归查找 data/memory 下的所有 .pt 文件（同时也检查 data/memory_remote）
+        pattern_local = os.path.join(MEMORY_DIR, "**", "*.pt")
+        pattern_remote = os.path.join(MEMORY_REMOTE_DIR, "**", "*.pt")
         files_steps = 0 # 读取文件的第二个数字，表示该文件对应的 step
         # 按文件名中的 step_xxx 数字大小排序，确保先训练较早的数据
-        all_files = glob.glob(pattern, recursive=True)
+        local_files = glob.glob(pattern_local, recursive=True)
+        remote_files = glob.glob(pattern_remote, recursive=True)
+        all_files = local_files + remote_files
         def sort_key_by_step(filepath):
             filename = os.path.basename(filepath)
             match = re.search(r'step_(\d+)', filename)
@@ -134,7 +140,20 @@ def run_trainer():
                     # Move to archive
                     # 保持目录结构移动到 archive
                     # e.g. data/memory/DEFECT/file.pt -> data/archive/DEFECT/file.pt
-                    rel_path = os.path.relpath(filepath, MEMORY_DIR)
+                    try:
+                        abs_filepath = os.path.abspath(filepath)
+                        abs_memory = os.path.abspath(MEMORY_DIR)
+                        abs_remote = os.path.abspath(MEMORY_REMOTE_DIR)
+                        if os.path.commonpath([abs_filepath, abs_memory]) == abs_memory:
+                            rel_path = os.path.relpath(filepath, MEMORY_DIR)
+                        elif os.path.commonpath([abs_filepath, abs_remote]) == abs_remote:
+                            rel_path = os.path.relpath(filepath, MEMORY_REMOTE_DIR)
+                        else:
+                            # Fallback: place under archive root with basename
+                            rel_path = os.path.basename(filepath)
+                    except Exception:
+                        rel_path = os.path.basename(filepath)
+
                     archive_path = os.path.join(ARCHIVE_DIR, rel_path)
                     os.makedirs(os.path.dirname(archive_path), exist_ok=True)
                     
