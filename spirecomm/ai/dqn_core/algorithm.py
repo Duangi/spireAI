@@ -1,12 +1,7 @@
-from calendar import c
 from dataclasses import fields
 import random
 from collections import deque
-from re import purge
-import sys
-import time
 import numpy as np
-from sympy import false
 import torch
 import torch.optim as optim
 import torch.nn as nn
@@ -63,7 +58,7 @@ class SpireAgent:
         self.gamma = 0.99
         self.temperature_min = 0.1
 
-        self.temperature_start = 1.44
+        self.temperature_start = 1.3
         self.temperature = self.temperature_start
         self.exploration_total_steps = 400000  # 计划的总探索步数
         self.temperature_decay = 0.99999
@@ -446,24 +441,7 @@ class SpireAgent:
         if not action_type_mask.any():
             # 尝试从 available_commands 恢复
             if hasattr(game_state_obj, 'available_commands'):
-                cmds = game_state_obj.available_commands
-                if 'end' in cmds:
-                    action_type_mask[DecomposedActionType.END.value] = True
-                elif 'proceed' in cmds:
-                    action_type_mask[DecomposedActionType.PROCEED.value] = True
-                elif 'confirm' in cmds:
-                    action_type_mask[DecomposedActionType.CONFIRM.value] = True
-                elif 'skip' in cmds:
-                    action_type_mask[DecomposedActionType.SKIP.value] = True
-                elif 'leave' in cmds:
-                    action_type_mask[DecomposedActionType.LEAVE.value] = True
-                elif 'return' in cmds:
-                    action_type_mask[DecomposedActionType.RETURN.value] = True
-            
-            # 如果还是全 False (比如 available_commands 解析失败)，强制开启 END 以防 Crash
-            if not action_type_mask.any():
-                # print("Warning: All actions masked! Forcing END.")
-                action_type_mask[DecomposedActionType.END.value] = True
+                return None
 
         # 先记录 available_commands（你要求在动作选择时输出）
         ava_commands = getattr(game_state_obj, 'available_commands', None)

@@ -89,6 +89,8 @@ class DQNAgent:
         # 3. 使用DQN算法选择一个动作
         # SpireAgent.choose_action 需要 masks 参数
         chosen_action = self.dqn_algorithm.choose_action(current_state_tensor, masks, game_state)
+        if chosen_action is None:
+            return 'state'  # 无法选择动作时，返回 "state" 保持当前状态
         
         # bug处理：动画大于一切导致的：使用混沌药水之后，药水栏虽然满了，但是数据中显示没满导致的买药失败并卡住的bug
         # 判断上一个动作是否为用掉混沌药水
