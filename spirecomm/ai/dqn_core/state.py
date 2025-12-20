@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from random import choice
 from spirecomm.ai.constants import (
     MAX_CHOOSE_COUNT, MAX_HAND_SIZE, MAX_MONSTER_COUNT, MAX_POTION_COUNT, 
     MAX_DECK_SIZE, MAX_ORB_COUNT, MAX_POWER_COUNT, MAX_MAP_NODE_COUNT, 
@@ -376,6 +375,9 @@ class GameStateProcessor:
                     # 避免同时使用多个卡牌相关的药水导致卡页面
                     if game.in_combat and game.screen_type == ScreenType.CARD_REWARD:
                         # 在游戏中出现的卡牌奖励页面时，不能使用药水，先把牌选了再说！
+                        continue
+                    # 只允许在战斗中使用混沌药水
+                    if potion.name == "混沌药水" and not game.in_combat:
                         continue
                     if potion.requires_target:
                         for monster_idx, monster in enumerate(game.monsters):
