@@ -1,6 +1,7 @@
 from dataclasses import fields
 import random
 from collections import deque
+import sys
 import numpy as np
 import torch
 import torch.optim as optim
@@ -19,6 +20,7 @@ from spirecomm.spire.potion import Potion
 from spirecomm.spire.relic import Relic
 from spirecomm.spire.screen import ScreenType, ShopScreen
 from spirecomm.ai.dqn_core.wandb_logger import WandbLogger
+from spirecomm.utils.path import get_root_dir
 
 class SpireAgent:
     def __init__(self, config: SpireConfig, device="cuda" if torch.cuda.is_available() else "cpu", wandb_logger: WandbLogger = None):
@@ -27,6 +29,10 @@ class SpireAgent:
         self.wandb_logger = wandb_logger
         self.last_q_values = {}
         self.total_steps = 0
+
+        # 新增：以模型文件名中的 step_xxx 为训练步数（training_steps）
+        # 这个值将用于温度调度的主来源
+        self.training_steps = 0
         # 训练速度统计：60s 窗口 + 1h 窗口
         self._velocity_last_time = None
         self._velocity_last_step = 0
@@ -54,30 +60,81 @@ class SpireAgent:
         self.memory = deque(maxlen=5000) 
         
         # --- 训练超参数 ---
-        self.batch_size = 32
+        self.batch_size = 256
         self.gamma = 0.99
         self.temperature_min = 0.1
 
-        self.temperature_start = 1.17
+        self.temperature_start = 2.0
         self.temperature = self.temperature_start
-        self.exploration_total_steps = 300000  # 计划的总探索步数
-        self.temperature_decay = 0.99999
+        self.exploration_total_steps = 5000000  # 计划的总探索步数
         self.is_training = True
         self.absolute_logger = AbsoluteLogger(LogType.STATE)
         self.absolute_logger.start_episode()
     def save_model(self, path):
+        # 保存模型权重与优化器，并记录 training_steps 以便 Worker 同步温度
         torch.save({
             'model': self.policy_net.state_dict(),
             'optimizer': self.optimizer.state_dict(),
-            'config': self.cfg
+            'config': self.cfg,
+            'training_steps': int(self.training_steps)
         }, path)
+
+        # 如果路径名中包含 step_xxx，则更新 self.training_steps（方便训练端在保存后立即记录）
+        try:
+            import re
+            m = re.search(r'step[_-]?(\d+)', os.path.basename(path))
+            if m:
+                self.training_steps = int(m.group(1))
+        except Exception:
+            pass
 
     def load_model(self, path):
         if os.path.exists(path):
             checkpoint = torch.load(path, map_location=self.device)
-            self.policy_net.load_state_dict(checkpoint['model'])
-            self.target_net.load_state_dict(checkpoint['model'])
-            self.optimizer.load_state_dict(checkpoint['optimizer'])
+            # 加载权重（兼容不同 checkpoint 格式）
+            try:
+                if 'model' in checkpoint:
+                    self.policy_net.load_state_dict(checkpoint['model'])
+                    self.target_net.load_state_dict(checkpoint['model'])
+            except Exception:
+                pass
+
+            # 尝试加载 optimizer（训练端保存时存在）
+            if 'optimizer' in checkpoint:
+                try:
+                    self.optimizer.load_state_dict(checkpoint['optimizer'])
+                except Exception:
+                    pass
+
+            # 优先从 checkpoint 中取 training_steps 字段
+            ts = 0
+            try:
+                ts = int(checkpoint.get('training_steps', 0) or 0)
+            except Exception:
+                ts = 0
+
+            # 其次尝试从文件名解析 step_xxx
+            if not ts:
+                try:
+                    import re
+                    m = re.search(r'step[_-]?(\d+)', os.path.basename(path))
+                    if m:
+                        ts = int(m.group(1))
+                except Exception:
+                    ts = 0
+
+            # 如果仍没有找到 training_steps，使用临时默认值 300000
+            if not ts:
+                ts = 300000
+
+            self.training_steps = ts
+
+            # 同步 temperature
+            try:
+                self.update_temperature()
+                sys.stderr.write(f"current_steps={self.training_steps}, temperature={self.temperature:.4f}\n")
+            except Exception:
+                pass
 
     # ==========================================
     # 1. 核心数据处理: Collate (打包)
@@ -85,7 +142,7 @@ class SpireAgent:
     def collate_states(self, states: list[SpireState]) -> SpireState:
         """
         将 List[SpireState] (长度=Batch) 转换为 一个 SpireState (Tensor维度增加Batch维)
-        例如: 32 个 [10, 128] 的 hand_vec -> 1 个 [32, 10, 128] 的 hand_vec
+        例如: 256 个 [10, 128] 的 hand_vec -> 1 个 [256, 10, 128] 的 hand_vec
         """
         # 动态获取 SpireState 的所有字段名
         field_names = [f.name for f in fields(SpireState)]
@@ -318,9 +375,60 @@ class SpireAgent:
             self.last_episodes = self.total_steps
             self.last_train_time = now_time
 
-        progress = min(1.0, self.total_steps / self.exploration_total_steps)
-        self.temperature = self.temperature_start - progress * (self.temperature_start - self.temperature_min)
+        # Update temperature based on training_steps (preferred). If training_steps==0, update_temperature will use fallback 300000.
+        try:
+            self.update_temperature()
+        except Exception:
+            pass
 
+    def update_temperature(self):
+        """
+        Update temperature using self.training_steps as primary signal.
+        If training_steps is zero, use fallback value 300000 as requested.
+        """
+        try:
+            steps = int(getattr(self, 'training_steps', 0) or 0)
+            if steps <= 0:
+                steps = 300000
+            progress = min(1.0, float(steps) / max(1, self.exploration_total_steps))
+            self.temperature = self.temperature_start - progress * (self.temperature_start - self.temperature_min)
+        except Exception:
+            # keep existing temperature on failure
+            pass
+
+    def _get_latest_model_progress(self):
+        """
+        Scan the repository `models/` directory for filenames containing a step number
+        like `step_54000.pth` and return progress = min(1.0, step / exploration_total_steps).
+        Returns None when no step file is found.
+        """
+        try:
+            models_dir = os.path.join(get_root_dir(), 'models')
+            if not os.path.isdir(models_dir):
+                return None
+
+            files = os.listdir(models_dir)
+            max_step = None
+            import re
+            for fn in files:
+                m = re.search(r'step[_-]?(\d+)', fn)
+                if not m:
+                    continue
+                try:
+                    s = int(m.group(1))
+                except Exception:
+                    continue
+                if max_step is None or s > max_step:
+                    max_step = s
+
+            if max_step is None:
+                return None
+
+            progress = min(1.0, float(max_step) / max(1, self.exploration_total_steps))
+            return progress
+        except Exception:
+            return None
+        
     def update_target_net(self, soft=False, tau=0.05):
         if soft:
             for target_param, local_param in zip(self.target_net.parameters(), self.policy_net.parameters()):

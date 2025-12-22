@@ -1,3 +1,4 @@
+import sys
 import time
 from spirecomm.ai.dqn_core.algorithm import SpireAgent
 from spirecomm.ai.dqn_core.state import GameStateProcessor
