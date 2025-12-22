@@ -1,7 +1,6 @@
+#!/opt/miniconda3/envs/spire/bin/python3
 import os
 import sys
-import time
-import pickle
 import torch
 import itertools
 from datetime import datetime
