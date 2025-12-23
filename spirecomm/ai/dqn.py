@@ -80,11 +80,12 @@ class DQNAgent:
                     self.dqn_algorithm.train()
 
         # 更改商店访问记录
-        if self.previous_game_state.floor != game_state.floor:
-            self.state_processor.shop_visited = False
-        if game_state.screen_type == game.ScreenType.SHOP_SCREEN:
-            self.state_processor.shop_visited = True
-            
+        if self.previous_game_state is not None:
+            if self.previous_game_state.floor != game_state.floor:
+                self.state_processor.shop_visited = False
+            if game_state.screen_type == game.ScreenType.SHOP_SCREEN:
+                self.state_processor.shop_visited = True
+
         # --- 决策 ---
         # 1. 获取当前状态的向量和合法的动作掩码
         current_state_tensor = self.state_processor.get_state_tensor(game_state)
