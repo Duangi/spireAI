@@ -182,6 +182,9 @@ def main():
     # 更新 MemorySaver 的上下文，使保存的文件名包含当前模型 step
     memory_saver.set_context(chosen_class, current_model_step)
 
+    # 确保 DQNAgent 知道当前选择的角色，用于 StartGameAction 等逻辑
+    agent.change_class(chosen_class)
+
     # Coordinator setup
     coordinator = Coordinator()
     coordinator.signal_ready()
