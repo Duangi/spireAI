@@ -3,6 +3,7 @@ import sys
 import time
 import glob
 import shutil
+import itertools
 import torch
 from datetime import datetime
 
@@ -115,9 +116,6 @@ class MemorySaver:
 
 def choose_player_class_interactive():
     classes = list(PlayerClass)
-    print("Available classes:")
-    for i, c in enumerate(classes):
-        print(f"  {i}: {c.name}")
     try:
         sel = input("Select class index (or press Enter for 0): ")
     except Exception:
@@ -132,27 +130,21 @@ def choose_player_class_interactive():
         try:
             return PlayerClass[sel]
         except Exception:
-            print("Invalid selection, defaulting to first class.")
+            # 默认选择第一个角色
             return classes[0]
 
 
 def main():
     """评估者模式：使用推理模式模型打游戏，但仍通过 memory_callback 生成训练数据文件。"""
-    # Allow class via CLI arg or interactive
-    arg = sys.argv[1] if len(sys.argv) > 1 else None
-    if arg:
-        try:
-            chosen_class = PlayerClass[arg]
-        except Exception:
-            try:
-                chosen_class = PlayerClass[int(arg)]
-            except Exception:
-                print(f"Unknown class '{arg}', falling back to interactive selection.")
-                chosen_class = choose_player_class_interactive()
-    else:
-        chosen_class = choose_player_class_interactive()
+    # ===== 手动配置评估角色 =====
+    # 如果 configured_class 是具体某个 PlayerClass（例如 PlayerClass.IRONCLAD），则一直用这个角色评估。
+    # 如果 configured_class 为 None，则在四个角色之间轮流评估。
+    configured_class: PlayerClass | None = None  # 在这里修改想要固定评估的角色，比如 PlayerClass.IRONCLAD
 
-    print(f"[Evaluator] Selected class: {chosen_class.name}")
+    if configured_class is not None:
+        class_cycle = None
+    else:
+        class_cycle = itertools.cycle(PlayerClass)
 
     # 初始化 MemorySaver，用于写入 data/memory 结构
     memory_saver = MemorySaver()
@@ -166,24 +158,8 @@ def main():
         agent.dqn_algorithm.policy_net.eval()
     except Exception:
         pass
-
-    # Load latest model for this class if available
-    model_path, step = get_latest_model_path(chosen_class)
-    current_model_step = step or 0
-    if model_path:
-        try:
-            print(f"[Evaluator] Loading model {model_path} (step {step})...")
-            agent.load_model(model_path)
-        except Exception as e:
-            print(f"[Evaluator] Failed to load model: {e}")
-    else:
-        print("[Evaluator] No model found, using random-initialized weights.")
-
-    # 更新 MemorySaver 的上下文，使保存的文件名包含当前模型 step
-    memory_saver.set_context(chosen_class, current_model_step)
-
-    # 确保 DQNAgent 知道当前选择的角色，用于 StartGameAction 等逻辑
-    agent.change_class(chosen_class)
+    # 当前模型 step 计数，用于命名 memory 文件
+    current_model_step = 0
 
     # Coordinator setup
     coordinator = Coordinator()
@@ -192,9 +168,36 @@ def main():
     coordinator.register_out_of_game_callback(agent.get_next_action_out_of_game)
     coordinator.register_command_error_callback(agent.handle_error)
 
-    print("[Evaluator] Starting evaluation playthrough...")
-    coordinator.play_one_game(chosen_class, ascension_level=0)
-    print("[Evaluator] Evaluation finished.")
+    game_counter = 0
+    try:
+        while True:
+            # 根据配置确定当前这一局使用的角色
+            if configured_class is not None:
+                chosen_class = configured_class
+            else:
+                chosen_class = next(class_cycle)
+
+            # 每一局开始前，像 worker 一样重新加载最新模型
+            model_path, step = get_latest_model_path(chosen_class)
+            if model_path:
+                try:
+                    agent.load_model(model_path)
+                    current_model_step = step or 0
+                except Exception as e:
+                    pass
+            else:
+                pass
+
+            # 更新 MemorySaver 的上下文，使保存的文件名包含当前模型 step
+            memory_saver.set_context(chosen_class, current_model_step)
+
+            # 确保 DQNAgent 知道当前选择的角色，用于 StartGameAction 等逻辑
+            agent.change_class(chosen_class)
+
+            game_counter += 1
+            coordinator.play_one_game(chosen_class, ascension_level=0)
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == '__main__':
