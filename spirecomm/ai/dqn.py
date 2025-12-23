@@ -97,6 +97,8 @@ class DQNAgent:
         # 3. 使用DQN算法选择一个动作
         # SpireAgent.choose_action 需要 masks 参数
         chosen_action = self.dqn_algorithm.choose_action(current_state_tensor, masks, game_state)
+        if self.play_mode and not game_state.in_combat:
+            time.sleep(0.5)  # 在非战斗中稍作停顿，避免动作过快,我看不清
         if chosen_action is None:
             return 'state'  # 无法选择动作时，返回 "state" 保持当前状态
 
