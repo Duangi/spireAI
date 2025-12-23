@@ -29,7 +29,7 @@ class GameStateProcessor:
     以便作为神经网络的输入。
     这个实现将具体的向量化逻辑委托给 `Game` 对象自身的 `get_vector` 方法。
     """
-
+    shop_visited: bool = False
     def get_state_tensor(self, game: Game) -> SpireState:
         """
         从 Game 对象获取完整的 SpireState 对象。
@@ -323,7 +323,7 @@ class GameStateProcessor:
         if game.choice_available and "choose" in game.available_commands:
             for i, choice in enumerate(game.choice_list):
                 # 访问过商店后不能再选 shop 了
-                if game.shop_visited and choice == "shop":  
+                if self.shop_visited and choice == "shop":  
                     continue
                 if game.screen_type == ScreenType.GRID:
                     # Grid 选择时，不能选择已经被选过的格子

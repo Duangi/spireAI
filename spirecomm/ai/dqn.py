@@ -79,6 +79,12 @@ class DQNAgent:
                     # d. 训练模型
                     self.dqn_algorithm.train()
 
+        # 更改商店访问记录
+        if self.previous_game_state.floor != game_state.floor:
+            self.state_processor.shop_visited = False
+        if game_state.screen_type == game.ScreenType.SHOP_SCREEN:
+            self.state_processor.shop_visited = True
+            
         # --- 决策 ---
         # 1. 获取当前状态的向量和合法的动作掩码
         current_state_tensor = self.state_processor.get_state_tensor(game_state)
@@ -93,6 +99,7 @@ class DQNAgent:
         if chosen_action is None:
             return 'state'  # 无法选择动作时，返回 "state" 保持当前状态
 
+        
         # --- 为下一步做准备 ---
         # 存储当前的状态和动作用于下一次学习
         self.previous_prev_state = self.previous_game_state
