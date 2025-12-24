@@ -9,6 +9,7 @@ import torch.nn as nn
 from spirecomm.ai.constants import MAX_HAND_SIZE, MAX_MONSTER_COUNT, MAX_DECK_SIZE, MAX_POTION_COUNT
 import os
 import datetime
+import wandb
 
 from spirecomm.ai.absolute_logger import AbsoluteLogger, LogType
 from spirecomm.ai.dqn_core.action import BaseAction, DecomposedActionType, PlayAction, ChooseAction, PotionDiscardAction, PotionUseAction, SingleAction, ActionType
@@ -28,10 +29,8 @@ class SpireAgent:
         self.device = device
         self.wandb_logger = wandb_logger
         self.last_q_values = {}
-        self.total_steps = 0
 
-        # 新增：以模型文件名中的 step_xxx 为训练步数（training_steps）
-        # 这个值将用于温度调度的主来源
+        # 统一使用 training_steps 作为全局训练步数（用于温度调度和 wandb step）
         self.training_steps = 0
         # 训练速度统计：60s 窗口 + 1h 窗口
         self._velocity_last_time = None
@@ -52,7 +51,6 @@ class SpireAgent:
         
         # --- 优化器与损失 ---
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=1e-4)
-        # Huber Loss 对异常值（比如突然爆发的伤害数值）更稳健
         self.loss_fn = nn.SmoothL1Loss() 
         
         # --- 经验回放 ---
@@ -71,15 +69,15 @@ class SpireAgent:
         self.absolute_logger = AbsoluteLogger(LogType.STATE)
         self.absolute_logger.start_episode()
     def save_model(self, path):
-        # 保存模型权重与优化器，并记录 training_steps 以便 Worker 同步温度
+        """保存模型，记录 training_steps（唯一权威步数）。"""
         torch.save({
             'model': self.policy_net.state_dict(),
             'optimizer': self.optimizer.state_dict(),
             'config': self.cfg,
-            'training_steps': int(self.training_steps)
+            'training_steps': int(self.training_steps),
         }, path)
 
-        # 如果路径名中包含 step_xxx，则更新 self.training_steps（方便训练端在保存后立即记录）
+        # 如果路径名中包含 step_xxx，则同步更新 training_steps
         try:
             import re
             m = re.search(r'step[_-]?(\d+)', os.path.basename(path))
@@ -89,31 +87,44 @@ class SpireAgent:
             pass
 
     def load_model(self, path):
-        if os.path.exists(path):
-            checkpoint = torch.load(path, map_location=self.device)
-            # 加载权重（兼容不同 checkpoint 格式）
-            try:
-                if 'model' in checkpoint:
+        if not os.path.exists(path):
+            return
+
+        try:
+            checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+
+            # 1. 加载权重
+            if 'model' in checkpoint:
+                try:
                     self.policy_net.load_state_dict(checkpoint['model'])
                     self.target_net.load_state_dict(checkpoint['model'])
-            except Exception:
-                pass
+                    sys.stderr.write(f"[INFO] 成功加载模型权重: {path}\n")
+                except RuntimeError as e:
+                    sys.stderr.write(f"[ERROR] 模型权重加载失败 (维度不匹配?): {e}\n")
+                    raise e
 
-            # 尝试加载 optimizer（训练端保存时存在）
-            if 'optimizer' in checkpoint:
+            # 2. 加载优化器（仅在训练端真正使用）
+            if 'optimizer' in checkpoint and self.is_training:
                 try:
                     self.optimizer.load_state_dict(checkpoint['optimizer'])
-                except Exception:
-                    pass
+                except Exception as e:
+                    sys.stderr.write(f"[WARN] 优化器加载失败 (将被重置): {e}\n")
 
-            # 优先从 checkpoint 中取 training_steps 字段
+            # 3. 恢复 training_steps
             ts = 0
-            try:
-                ts = int(checkpoint.get('training_steps', 0) or 0)
-            except Exception:
-                ts = 0
-
-            # 其次尝试从文件名解析 step_xxx
+            if 'training_steps' in checkpoint:
+                try:
+                    ts = int(checkpoint['training_steps'])
+                except Exception:
+                    ts = 0
+            elif 'total_steps' in checkpoint:
+                # 兼容旧 checkpoint，把 total_steps 当成 training_steps
+                try:
+                    ts = int(checkpoint['total_steps'])
+                except Exception:
+                    ts = 0
+            
+            # 若从字典没取到，尝试从文件名解析 step_xxx
             if not ts:
                 try:
                     import re
@@ -123,18 +134,21 @@ class SpireAgent:
                 except Exception:
                     ts = 0
 
-            # 如果仍没有找到 training_steps，使用临时默认值 300000
             if not ts:
                 ts = 300000
 
             self.training_steps = ts
 
-            # 同步 temperature
+            # 4. 同步温度
             try:
                 self.update_temperature()
-                sys.stderr.write(f"current_steps={self.training_steps}, temperature={self.temperature:.4f}\n")
-            except Exception:
-                pass
+                sys.stderr.write(f"[INFO] 进度恢复: training_steps={self.training_steps}, Temp={self.temperature:.4f}\n")
+            except Exception as e:
+                sys.stderr.write(f"[WARN] 温度更新失败: {e}\n")
+
+        except Exception as e:
+            sys.stderr.write(f"[FATAL] load_model 发生严重错误: {e}\n")
+            raise e
 
     # ==========================================
     # 1. 核心数据处理: Collate (打包)
@@ -187,205 +201,157 @@ class SpireAgent:
         if len(self.memory) < self.batch_size:
             return
 
-        # 1. 采样
+        # 1. 采样与解包
         minibatch = random.sample(self.memory, self.batch_size)
-        
-        # 解压
         state_list = [x[0] for x in minibatch]
         action_list = [x[1] for x in minibatch]
         reward_list = [x[2] for x in minibatch]
         next_state_list = [x[3] for x in minibatch]
         done_list = [x[4] for x in minibatch]
 
-        # 2. 打包并移动到 GPU
         batch_state = self.to_device(self.collate_states(state_list))
         batch_next_state = self.to_device(self.collate_states(next_state_list))
-        
         batch_rewards = torch.tensor(reward_list, device=self.device, dtype=torch.float32)
         batch_dones = torch.tensor(done_list, device=self.device, dtype=torch.float32)
 
-        # 3. 计算当前 Q 值 (Predicted Q)
-        # Forward pass
+        # 2. 前向传播
         output: SpireOutput = self.policy_net(batch_state)
-        
-        # 提取对应动作的 Q 值
         pred_q_values = []
-        
         for i, action in enumerate(action_list):
-            # 获取 Action Type 的索引 (int)
-            # 假设 action 有 decomposed_type 属性
-            act_idx = action.decomposed_type.value 
-            
-            # 基础 Q 值 (Action Type Q)
+            act_idx = action.decomposed_type.value
             q_val = output.q_action_type[i, act_idx]
-            
-            # 加上分支 Q 值 (Argument Q)
             if isinstance(action, PlayAction):
-                # play_card: [Batch, 10] -> 取第 i 个样本的第 hand_idx 张牌
-                # 确保索引在合法范围内
-                hand_idx = min(action.hand_idx, 9) # MAX_HAND_SIZE-1
+                hand_idx = min(action.hand_idx, 9)
                 q_val += output.q_play_card[i, hand_idx]
                 if action.target_idx is not None:
-                    target_idx = min(action.target_idx, 4) # MAX_MONSTER_COUNT-1
-                    q_val += output.q_target_monster[i, target_idx]
-                    
+                    q_val += output.q_target_monster[i, min(action.target_idx, 4)]
             elif isinstance(action, ChooseAction):
-                # 确保索引在合法范围内
-                choice_idx = min(action.choice_idx, 14) # MAX_CHOICE_LIST-1
-                q_val += output.q_choose_option[i, choice_idx]
-                
+                q_val += output.q_choose_option[i, min(action.choice_idx, 14)]
             elif isinstance(action, PotionUseAction):
-                pot_idx = min(action.potion_idx, 4) # MAX_POTION_COUNT-1
-                q_val += output.q_potion_use[i, pot_idx]
+                q_val += output.q_potion_use[i, min(action.potion_idx, 4)]
                 if action.target_idx is not None:
-                    target_idx = min(action.target_idx, 4)
-                    q_val += output.q_target_monster[i, target_idx]
-            
+                    q_val += output.q_target_monster[i, min(action.target_idx, 4)]
             elif isinstance(action, PotionDiscardAction):
-                pot_idx = min(action.potion_idx, 4)
-                q_val += output.q_potion_discard[i, pot_idx]
-                
+                q_val += output.q_potion_discard[i, min(action.potion_idx, 4)]
             pred_q_values.append(q_val)
-            
-        # 堆叠成 Tensor [Batch]
         pred_q_tensor = torch.stack(pred_q_values)
 
-        # 4. 计算目标 Q 值 (Target Q)
+        # 3. 计算 Target Q
         with torch.no_grad():
             next_output: SpireOutput = self.target_net(batch_next_state)
-            
-            # 简化策略：Double DQN 或直接 Max
-            # 这里取 Next Action Type 的最大值作为估计
-            # 改进方向：应该取 Max(ActionType + Max(Branch))，但这计算比较复杂
-            # 目前 heuristic: Max Action Type Q 已经能提供足够的梯度方向
             max_next_q, _ = next_output.q_action_type.max(dim=1)
-            
             target_q_tensor = batch_rewards + (1 - batch_dones) * self.gamma * max_next_q
 
-        # 5. 反向传播
-        # --- 关键修复：在 loss 前过滤非有限值，避免污染训练 ---
+        # 4. 反向传播
         finite_mask = torch.isfinite(pred_q_tensor) & torch.isfinite(target_q_tensor)
-        dropped = int((~finite_mask).sum().item())
-
         if finite_mask.any():
             loss = self.loss_fn(pred_q_tensor[finite_mask], target_q_tensor[finite_mask])
         else:
-            # 整个 batch 都坏了：构造一个 0 loss，跳过反传
-            loss = torch.zeros((), device=self.device, dtype=torch.float32)
+            loss = torch.tensor(0.0, device=self.device, requires_grad=True)
 
-        # 只有 loss 有限且有有效样本时才更新参数
-        did_step = False
-        if finite_mask.any() and torch.isfinite(loss):
-            self.optimizer.zero_grad()
+        self.optimizer.zero_grad()
+        if finite_mask.any():
             loss.backward()
-            # 梯度裁剪防止梯度爆炸 (Transformer/LSTM常用)
             torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
             self.optimizer.step()
-            did_step = True
 
-        self.total_steps += 1
+        # 用 training_steps 作为唯一权威步数
+        self.training_steps += 1
 
-        if self.wandb_logger:
-            # 统计 pred/target 内的数值健康度（用于定位是否只是 log 问题）
-            pred_finite = torch.isfinite(pred_q_tensor)
-            targ_finite = torch.isfinite(target_q_tensor)
-            pred_bad = int((~pred_finite).sum().item())
-            targ_bad = int((~targ_finite).sum().item())
-
-            # 过滤掉可能存在的 -inf / inf / nan，避免污染 Log 统计
-            valid_q = pred_q_tensor[pred_finite]
-            if valid_q.numel() > 0:
-                avg_q_val = valid_q.mean().item()
-                max_q_val = valid_q.max().item()
-                min_q_val = valid_q.min().item()
-            else:
-                avg_q_val = 0.0
-                max_q_val = 0.0
-                min_q_val = 0.0
-
-            # 如果 avg/max/min 仍然是非有限，说明已经不是 -inf 的问题，而是网络输出爆炸/溢出
-            if not np.isfinite(avg_q_val):
-                avg_q_val = 0.0
-            if not np.isfinite(max_q_val):
-                max_q_val = 0.0
-            if not np.isfinite(min_q_val):
-                min_q_val = 0.0
-
-            loss_to_log = loss.item() if torch.isfinite(loss) else 0.0
-
-            # 训练速度：按固定窗口统计（更平滑）
-            now_time = datetime.datetime.now()
-            steps_per_min = 0.0
-            steps_per_hour = 0.0
-
-            try:
-                # 初始化
-                if self._velocity_last_time is None:
-                    self._velocity_last_time = now_time
-                    self._velocity_last_step = self.total_steps
-                    self._velocity_last_flush_time = now_time
-                    self._velocity_last_flush_step = self.total_steps
-                    self._hour_last_time = now_time
-                    self._hour_last_step = self.total_steps
-                else:
-                    # ---- 60 秒窗口：每满 60 秒更新一次 steps/min ----
-                    if self._velocity_last_flush_time is not None:
-                        flush_diff = (now_time - self._velocity_last_flush_time).total_seconds()
-                        if flush_diff >= 60.0:
-                            step_diff = self.total_steps - self._velocity_last_flush_step
-                            if flush_diff > 0 and step_diff >= 0:
-                                steps_per_min = (step_diff / flush_diff) * 60.0
-
-                            # 滚动 60s 窗口起点
-                            self._velocity_last_flush_time = now_time
-                            self._velocity_last_flush_step = self.total_steps
-
-                    # ---- 1 小时窗口：每满 3600 秒更新一次 steps/hour（过去一小时总 step 数） ----
-                    if self._hour_last_time is not None:
-                        hour_diff = (now_time - self._hour_last_time).total_seconds()
-                        if hour_diff >= 3600.0:
-                            hour_step_diff = self.total_steps - self._hour_last_step
-                            if hour_step_diff >= 0:
-                                steps_per_hour = float(hour_step_diff)
-
-                            # 滚动 1h 窗口起点
-                            self._hour_last_time = now_time
-                            self._hour_last_step = self.total_steps
-            except Exception:
-                pass
-
-            self.wandb_logger.log_metrics(
-                {
-                    "loss": loss_to_log,
-                    "avg_reward": batch_rewards.mean().item(),
-                    "avg_q_value": avg_q_val,
-                    "max_q_value": max_q_val,
-                    "min_q_value": min_q_val,
-                    "temperature": self.temperature,
-                    "bad_pred_q_count": pred_bad,
-                    "bad_target_q_count": targ_bad,
-                    "dropped_td_pairs": dropped,
-                    "did_optimizer_step": 1 if did_step else 0,
-                    "train/steps_per_min": float(steps_per_min),
-                    "train/steps_per_hour": float(steps_per_hour),
-                },
-                step=self.total_steps
-            )
-            now_time = datetime.datetime.now()
-            self.last_episodes = self.total_steps
-            self.last_train_time = now_time
-
-        # Update temperature based on training_steps (preferred). If training_steps==0, update_temperature will use fallback 300000.
+        # 更新温度
         try:
             self.update_temperature()
         except Exception:
             pass
 
+        # 5. 日志记录
+        if self.wandb_logger:
+            with torch.no_grad():
+                valid_q = pred_q_tensor[finite_mask]
+                avg_q = valid_q.mean().item() if len(valid_q) > 0 else 0.0
+                max_q = valid_q.max().item() if len(valid_q) > 0 else 0.0
+                min_q = valid_q.min().item() if len(valid_q) > 0 else 0.0
+                loss_val = loss.item() if torch.isfinite(loss) else 0.0
+
+            metrics = {
+                "loss": loss_val,
+                "avg_reward": batch_rewards.mean().item(),
+                "avg_q_value": avg_q,
+                "max_q_value": max_q,
+                "min_q_value": min_q,
+                "temperature": self.temperature,
+            }
+
+            # 重型分布数据：每 1000 步输出一次
+            if self.training_steps % 1000 == 0:
+                try:
+                    action_counts = {}
+                    for a in action_list:
+                        name = a.decomposed_type.name
+                        action_counts[name] = action_counts.get(name, 0) + 1
+                    data_table = [[k, v] for k, v in action_counts.items()]
+                    metrics["dist/action_types"] = wandb.plot.bar(
+                        wandb.Table(data=data_table, columns=["Action", "Count"]),
+                        "Action", "Count", title=f"Actions (Step {self.training_steps})"
+                    )
+                    metrics["dist/reward_hist"] = wandb.Histogram(batch_rewards.cpu().numpy())
+                    q_heads = [
+                        output.q_action_type, output.q_play_card, output.q_target_monster,
+                        output.q_choose_option, output.q_potion_use, output.q_potion_discard
+                    ]
+                    flat_q = torch.cat([h.reshape(-1) for h in q_heads], dim=0)
+                    clean_q = flat_q[flat_q > -1e8].detach().cpu().numpy()
+                    if len(clean_q) > 0:
+                        metrics["dist/q_value_hist"] = wandb.Histogram(clean_q)
+                    FLOOR_IDX = 2
+                    MAX_FLOOR = 56
+                    if hasattr(batch_state, 'global_numeric'):
+                        floors = (batch_state.global_numeric[:, FLOOR_IDX] * MAX_FLOOR).long().cpu().numpy()
+                        metrics["dist/floor_hist"] = wandb.Histogram(floors)
+                except Exception as e:
+                    print(f"Error logging detailed stats: {e}")
+
+            # 训练速度统计使用 training_steps
+            now_time = datetime.datetime.now()
+            steps_per_min = 0.0
+            steps_per_hour = 0.0
+            try:
+                if self._velocity_last_time is None:
+                    self._velocity_last_time = now_time
+                    self._velocity_last_step = self.training_steps
+                    self._velocity_last_flush_time = now_time
+                    self._velocity_last_flush_step = self.training_steps
+                    self._hour_last_time = now_time
+                    self._hour_last_step = self.training_steps
+                else:
+                    if self._velocity_last_flush_time is not None:
+                        flush_diff = (now_time - self._velocity_last_flush_time).total_seconds()
+                        if flush_diff >= 60.0:
+                            step_diff = self.training_steps - self._velocity_last_flush_step
+                            if flush_diff > 0 and step_diff >= 0:
+                                steps_per_min = (step_diff / flush_diff) * 60.0
+                            self._velocity_last_flush_time = now_time
+                            self._velocity_last_flush_step = self.training_steps
+                    if self._hour_last_time is not None:
+                        hour_diff = (now_time - self._hour_last_time).total_seconds()
+                        if hour_diff >= 3600.0:
+                            hour_step_diff = self.training_steps - self._hour_last_step
+                            if hour_step_diff >= 0:
+                                steps_per_hour = float(hour_step_diff)
+                            self._hour_last_time = now_time
+                            self._hour_last_step = self.training_steps
+            except Exception:
+                pass
+
+            metrics["train/steps_per_min"] = float(steps_per_min)
+            metrics["train/steps_per_hour"] = float(steps_per_hour)
+
+            self.wandb_logger.log_metrics(metrics, step=self.training_steps)
+            self.last_train_time = now_time
+            self.last_episodes = self.training_steps
+
     def update_temperature(self):
-        """
-        Update temperature using self.training_steps as primary signal.
-        If training_steps is zero, use fallback value 300000 as requested.
-        """
+        """使用 training_steps 进行温度衰减。"""
         try:
             steps = int(getattr(self, 'training_steps', 0) or 0)
             if steps <= 0:
@@ -393,7 +359,6 @@ class SpireAgent:
             progress = min(1.0, float(steps) / max(1, self.exploration_total_steps))
             self.temperature = self.temperature_start - progress * (self.temperature_start - self.temperature_min)
         except Exception:
-            # keep existing temperature on failure
             pass
 
     def _get_latest_model_progress(self):

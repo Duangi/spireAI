@@ -61,6 +61,19 @@ def get_latest_model_path(player_class=None):
     else:
         return None, 0
 
+# ========================================================
+# 【新增】兼容补丁函数
+# ========================================================
+def fix_legacy_state(state):
+    """
+    原地修改 SpireState 对象，补全旧数据缺失的字段 (draw_pile/exhaust_pile)。
+    """
+    # 必须与 model.py 中的 MAX_DECK_SIZE 保持一致，假设为 100
+    if not hasattr(state, 'draw_pile_ids'):
+        state.draw_pile_ids = torch.zeros(100, dtype=torch.long)
+    if not hasattr(state, 'exhaust_pile_ids'):
+        state.exhaust_pile_ids = torch.zeros(100, dtype=torch.long)
+
 def run_trainer():
     # Initialize WandB
     if wandb.run is None:
@@ -128,6 +141,13 @@ def run_trainer():
                             pass
                     # Add to replay buffer
                     for t in transitions:
+                        # ========================================================
+                        # 【新增】调用兼容函数，原地修复旧数据
+                        # ========================================================
+                        fix_legacy_state(t['state_tensor'])
+                        fix_legacy_state(t['next_state_tensor'])
+                        # ========================================================
+
                         agent.dqn_algorithm.remember(
                             t['state_tensor'], 
                             t['action'], 

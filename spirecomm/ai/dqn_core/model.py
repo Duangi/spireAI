@@ -451,8 +451,10 @@ class SpireDQN(nn.Module):
         # --- 5. Context Body ---
         # 计算 Context 输入维度 (根据你的模块数量调整)
         # Global(1) + Player(3) + Hand(1) + Deck(1) + Discard(1) + Relic(1) + 
-        # Potion(1) + Monster(1) + Map(1) + Screen(1) + CardPlay(1) = 13
-        total_ctx = config.feat_dim * 13
+        # Potion(1) + Monster(1) + Map(1) + Screen(1) + CardPlay(1)
+        # 加上 Draw Pile 和 Exhaust Pile (各1) = 15
+
+        total_ctx = config.feat_dim * 15
         
         self.shared_body = nn.Sequential(
             nn.Linear(total_ctx, config.context_dim),
@@ -480,7 +482,9 @@ class SpireDQN(nn.Module):
         # A. 简单列表
         ctx_deck = self.simple_pooler(self.unified_emb(state.deck_ids))
         ctx_discard = self.simple_pooler(self.unified_emb(state.discard_pile_ids))
-        
+        ctx_draw = self.simple_pooler(self.unified_emb(state.draw_pile_ids))
+        ctx_exhaust = self.simple_pooler(self.unified_emb(state.exhaust_pile_ids))
+
         # B. 复杂实体 (Rich Rep + Pooling)
         # Hand
         hand_emb = self.unified_emb(state.hand_ids)
@@ -532,7 +536,10 @@ class SpireDQN(nn.Module):
             ctx_p_num, ctx_p_pwr, ctx_p_orb,
             ctx_hand, ctx_deck, ctx_discard,
             ctx_relic, ctx_potion, ctx_monster,
-            ctx_map, ctx_screen, ctx_card_play
+            ctx_map, ctx_screen, ctx_card_play,
+
+            # 之前漏掉了 draw和exhaust pile
+            ctx_draw, ctx_exhaust
         ], dim=1)
         
         context = self.shared_body(raw_context)

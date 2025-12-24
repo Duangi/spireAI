@@ -181,35 +181,5 @@ class DQNAgent:
         try:
             return self.dqn_algorithm.load_model(model_path)
         except Exception as primary_exc:
-            # 回退加载
-            try:
-                # 将 SpireConfig 加入 safe globals（若当前 torch 版本支持）
-                try:
-                    torch.serialization.add_safe_globals([SpireConfig])
-                except Exception:
-                    pass
-
-                device = getattr(self.dqn_algorithm, 'device', 'cpu')
-                try:
-                    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-                except TypeError:
-                    # 旧版 torch 不支持 weights_only 参数
-                    checkpoint = torch.load(model_path, map_location=device)
-
-                if isinstance(checkpoint, dict):
-                    # 常见字段名映射
-                    for key in ('model', 'state_dict', 'model_state_dict', 'policy_net', 'model_state'):
-                        if key in checkpoint:
-                            self.dqn_algorithm.policy_net.load_state_dict(checkpoint[key])
-                            break
-                    else:
-                        # 直接作为 state_dict
-                        self.dqn_algorithm.policy_net.load_state_dict(checkpoint)
-                else:
-                    # 直接保存的 state_dict
-                    self.dqn_algorithm.policy_net.load_state_dict(checkpoint)
-
-                return True
-            except Exception as fallback_exc:
-                # 将两个异常信息合并，便于排查
-                raise RuntimeError(f"无法加载模型: 主加载错误: {primary_exc}; 回退加载错误: {fallback_exc}")
+            sys.stderr.write(f"[WARN] DQNAgent.load_model primary method failed: {primary_exc}\n")
+            
