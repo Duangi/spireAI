@@ -419,14 +419,19 @@ class GameStateProcessor:
                             else:
                                 actions.append(PotionDiscardAction(type=ActionType.POTION_DISCARD, potion_idx=potion_idx, decomposed_type=DecomposedActionType.POTION_DISCARD))
                     # 情况3：战斗中，有混沌药水，允许扔除了混沌药水以外的药水
-                    # 情况4：战斗中，手牌中有名为炼制药水的卡牌，允许扔除了混沌药水以外的药水
+                    # 情况4：战斗中，手牌中有名为炼制药水的卡牌，且手里药水已经满了，允许扔除了混沌药水以外的药水
                     if game.in_combat:
-                        can_discard = True
+                        can_discard = False
+                        if potion.name != "混沌药水":
+                            if "混沌药水" in [p.name for p in game.potions]:
+                                can_discard = True
+                        if game.are_potions_full():
+                            for card in game.hand:
+                                if card.name == "炼制药水":
+                                    can_discard = True
+                        # 总而言之，混沌药水不能被扔
                         if potion.name == "混沌药水":
                             can_discard = False
-                        for card in game.hand:
-                            if card.name == "炼制药水":
-                                can_discard = False
                         if not can_discard:
                             continue
                         else:
