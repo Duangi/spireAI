@@ -395,7 +395,43 @@ class GameStateProcessor:
                     else:
                         actions.append(PotionUseAction(type=ActionType.POTION_USE, potion_idx=potion_idx, target_idx=None, decomposed_type=DecomposedActionType.POTION_USE))
                 if potion.can_discard:
-                    actions.append(PotionDiscardAction(type=ActionType.POTION_DISCARD, potion_idx=potion_idx, decomposed_type=DecomposedActionType.POTION_DISCARD))
+                    # 加入masking限制扔药水！（和其他的逻辑不同，只在几种情况下允许扔药水）
+                    # 情况1：腾位置：如果有战斗奖励要选药水且药水栏满了，就允许扔药水
+                    if game.screen_type == ScreenType.COMBAT_REWARD:
+                        if not game.are_potions_full():
+                            # 如果没满，禁止扔药水
+                            continue
+                        else:
+                            # 如果满了，且奖励里有药水，就允许扔药水腾位置
+                            if game.choice_available and "choose" in game.available_commands:
+                                if "potion" in game.choice_list:
+                                    actions.append(PotionDiscardAction(type=ActionType.POTION_DISCARD, potion_idx=potion_idx, decomposed_type=DecomposedActionType.POTION_DISCARD))
+                    
+                    # 情况2：商店里买药水时，如果药水栏满了，就允许扔药水
+                    if game.screen_type == ScreenType.SHOP_SCREEN:
+                        if not game.are_potions_full():
+                            # 如果没满，禁止扔药水
+                            continue
+                        else:
+                            # 如果满了，且奖励里没有药水，也不允许扔药水
+                            if len(game.screen.potions) <= 0:
+                                continue
+                            else:
+                                actions.append(PotionDiscardAction(type=ActionType.POTION_DISCARD, potion_idx=potion_idx, decomposed_type=DecomposedActionType.POTION_DISCARD))
+                    # 情况3：战斗中，有混沌药水，允许扔除了混沌药水以外的药水
+                    # 情况4：战斗中，手牌中有名为炼制药水的卡牌，允许扔除了混沌药水以外的药水
+                    if game.in_combat:
+                        can_discard = True
+                        if potion.name == "混沌药水":
+                            can_discard = False
+                        for card in game.hand:
+                            if card.name == "炼制药水":
+                                can_discard = False
+                        if not can_discard:
+                            continue
+                        else:
+                            actions.append(PotionDiscardAction(type=ActionType.POTION_DISCARD, potion_idx=potion_idx, decomposed_type=DecomposedActionType.POTION_DISCARD))
+                    
         # 非战斗中的通用动作
         # 正确的判断方式是检查 available_commands
         if "confirm" in game.available_commands:

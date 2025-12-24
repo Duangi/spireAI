@@ -554,7 +554,8 @@ class SpireAgent:
         # 先记录 available_commands（你要求在动作选择时输出）
         ava_commands = getattr(game_state_obj, 'available_commands', None)
         self.absolute_logger.write(f"Available Commands: {ava_commands}\n")
-
+        if game_state_obj.in_combat:
+            self.absolute_logger.write(f"当前战斗房间类型：{game_state_obj.room_type}\n")
         # 如果在战斗中：输出能量、怪物血量、意图/攻击
         try:
             in_combat = bool(getattr(game_state_obj, 'in_combat', False))
