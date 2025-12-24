@@ -39,8 +39,8 @@ class RewardCalculator:
         # 每获得一瓶药水的奖励
         self.POTION_GAINED_REWARD = 5.0
         # 每失去一瓶药水的惩罚 逻辑是，药水一般能决定一把游戏的胜负，所以惩罚力度要大一些，但是又不能太大以至于比赢得战斗还重
-        self.POTION_DISCARD_PENALTY = -10.0
-        self.POTION_USE_PENALTY = -10.0
+        self.POTION_DISCARD_PENALTY = -50.0
+        self.POTION_USE_PENALTY = -30.0
         self.POTION_USE_BONUS = 5.0
 
         # 给一个赢得了战斗但是不捡金币的惩罚！浪费可耻
