@@ -4,6 +4,7 @@ from spirecomm.ai.constants import (
     MAX_DECK_SIZE, MAX_ORB_COUNT, MAX_POWER_COUNT, MAX_MAP_NODE_COUNT, 
     MAX_SCREEN_ITEMS, MAX_SCREEN_MISC_DIM, MAX_SCREEN_ITEM_FEAT_DIM, MAX_CHOICE_LIST
 )
+from spirecomm.spire import relic
 from spirecomm.spire.game import Game
 from spirecomm.ai.dqn_core.action import  BaseAction, PlayAction, ChooseAction, PotionDiscardAction, PotionUseAction, SingleAction, ActionType, DecomposedActionType
 from typing import List
@@ -348,6 +349,13 @@ class GameStateProcessor:
                             potion_names.add(potion.name)
                         if choice in potion_names:
                             continue
+                # 如果有添水这个遗物，即使药水栏没满也不能买药水
+                if game.screen_type == ScreenType.SHOP_SCREEN:
+                    relic_names = set()
+                    for relic in game.relics:
+                        relic_names.add(relic.name)
+                    if '添水' in relic_names and choice == "potion":
+                        continue
                     
                 actions.append(ChooseAction(type=ActionType.CHOOSE, choice_idx=i, decomposed_type=DecomposedActionType.CHOOSE))
 
