@@ -3,10 +3,8 @@ import queue
 import threading
 import json
 import collections
-from typing import Optional
 import os
 
-from sympy import Abs
 
 
 from spirecomm.spire.game import Game
@@ -14,6 +12,7 @@ from spirecomm.spire.screen import ScreenType
 from spirecomm.communication.action import Action, StartGameAction
 from spirecomm.spire.character import PlayerClass
 from spirecomm.utils.path import get_root_dir
+from filelock import FileLock
 
 def read_stdin(input_queue, coordinator):
     """Read lines from stdin and write them to a queue
@@ -288,37 +287,41 @@ class Coordinator:
         """
         
         scores_path = os.path.join(get_root_dir(), "high_scores.json")
+        lock_path = scores_path + ".lock"
+
+        lock = FileLock(lock_path, timeout=10)
         try:
-            # 读取已有数据（容错）
-            if os.path.exists(scores_path):
-                with open(scores_path, 'r', encoding='utf-8') as f:
-                    try:
-                        high_scores = json.load(f)
-                    except Exception:
-                        high_scores = {}
-            else:
-                high_scores = {}
+            with lock:
+                # 读取已有数据（容错）
+                if os.path.exists(scores_path):
+                    with open(scores_path, 'r', encoding='utf-8') as f:
+                        try:
+                            high_scores = json.load(f)
+                        except Exception:
+                            high_scores = {}
+                else:
+                    high_scores = {}
 
-            class_name = player_class.get_chinese_name()
-            ascension_str = "进阶 " + str(ascension_level)
-            if class_name not in high_scores:
-                high_scores[class_name] = {}
-            if ascension_str not in high_scores[class_name]:
-                high_scores[class_name][ascension_str] = {'最高抵达层数': 0, '连胜纪录': 0}
+                class_name = player_class.get_chinese_name()
+                ascension_str = "进阶 " + str(ascension_level)
+                if class_name not in high_scores:
+                    high_scores[class_name] = {}
+                if ascension_str not in high_scores[class_name]:
+                    high_scores[class_name][ascension_str] = {'最高抵达层数': 0, '连胜纪录': 0}
 
-            if floor_reached > high_scores[class_name][ascension_str]['最高抵达层数']:
-                high_scores[class_name][ascension_str]['最高抵达层数'] = floor_reached
+                if floor_reached > high_scores[class_name][ascension_str]['最高抵达层数']:
+                    high_scores[class_name][ascension_str]['最高抵达层数'] = floor_reached
 
-            if victory:
-                high_scores[class_name][ascension_str]['连胜纪录'] += 1
-            else:
-                high_scores[class_name][ascension_str]['连胜纪录'] = 0
+                if victory:
+                    high_scores[class_name][ascension_str]['连胜纪录'] += 1
+                else:
+                    high_scores[class_name][ascension_str]['连胜纪录'] = 0
 
-            # 写回文件（utf-8 + 保留中文）
-            try:
-                with open(scores_path, 'w', encoding='utf-8') as f:
-                    json.dump(high_scores, f, ensure_ascii=False, indent=4)
-            except Exception as e:
-                pass
+                # 写回文件（utf-8 + 保留中文）
+                try:
+                    with open(scores_path, 'w', encoding='utf-8') as f:
+                        json.dump(high_scores, f, ensure_ascii=False, indent=4)
+                except Exception as e:
+                    pass
         except Exception as e:
             pass
