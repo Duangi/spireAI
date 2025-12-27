@@ -52,6 +52,11 @@ class DQNAgent:
                 self.load_model(model_path)
             except Exception as e:
                 raise RuntimeError(f"无法加载模型: {e}")
+    def _init_card_reward_tracking(self):
+        # 初始化卡牌奖励追踪
+        self.state_processor.cards_visited = None
+        self.state_processor.current_card_reward_index = -1
+        self.state_processor.max_card_reward_count = 0
     def get_next_action_in_game(self, game_state:Game):
         """
         这是由Coordinator在游戏状态改变时调用的核心回调函数。
@@ -79,9 +84,13 @@ class DQNAgent:
                     # d. 训练模型
                     self.dqn_algorithm.train()
 
+        
+
         # 更改商店访问记录
         if self.previous_game_state is not None:
             if self.previous_game_state.floor != game_state.floor:
+                self._init_card_reward_tracking()
+
                 self.state_processor.shop_visited = False
             if game_state.screen_type == game.ScreenType.SHOP_SCREEN:
                 self.state_processor.shop_visited = True
@@ -103,7 +112,23 @@ class DQNAgent:
         if chosen_action is None:
             return 'state'  # 无法选择动作时，返回 "state" 保持当前状态
 
+        # 如果是战斗奖励的房间，记录当前选择的卡牌奖励索引，用于后续访问判断
+        if game_state.screen_type == game.ScreenType.COMBAT_REWARD:
+            if chosen_action.decomposed_type == DecomposedActionType.CHOOSE:
+                self.state_processor.current_card_reward_index = chosen_action.choice_idx
+
+        # 如果选了卡牌，会导致index错位，需要重置 cards_visited
+        if game_state.screen_type == game.ScreenType.CARD_REWARD:
+            if chosen_action.decomposed_type == DecomposedActionType.CHOOSE:
+                self._init_card_reward_tracking()
+            elif chosen_action.decomposed_type == DecomposedActionType.SKIP:
+                if self.state_processor.cards_visited is None:
+                    num_rewards = self.state_processor.max_card_reward_count
+                    self.state_processor.cards_visited = [False] * num_rewards
+                # 标记当前选择的卡牌奖励为已访问
+                self.state_processor.cards_visited[self.state_processor.current_card_reward_index] = True
         
+
         # --- 为下一步做准备 ---
         # 存储当前的状态和动作用于下一次学习
         self.previous_prev_state = self.previous_game_state

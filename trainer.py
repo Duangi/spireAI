@@ -8,6 +8,7 @@ import re
 from datetime import datetime
 
 import wandb
+from spirecomm.ai.constants import MAX_DECK_SIZE
 from spirecomm.ai.dqn import DQNAgent
 from spirecomm.ai.dqn_core.wandb_logger import WandbLogger
 from spirecomm.utils.path import get_root_dir
@@ -70,9 +71,29 @@ def fix_legacy_state(state):
     """
     # 必须与 model.py 中的 MAX_DECK_SIZE 保持一致，假设为 100
     if not hasattr(state, 'draw_pile_ids'):
-        state.draw_pile_ids = torch.zeros(100, dtype=torch.long)
+        state.draw_pile_ids = torch.zeros(MAX_DECK_SIZE, dtype=torch.long)
     if not hasattr(state, 'exhaust_pile_ids'):
-        state.exhaust_pile_ids = torch.zeros(100, dtype=torch.long)
+        state.exhaust_pile_ids = torch.zeros(MAX_DECK_SIZE, dtype=torch.long)
+
+    # 修复全局数值维度 (17 -> 18)
+    # state.global_numeric 的形状通常是 [1, 17] (如果没 batch) 或 [17]
+    # 我们假设这里进来的可能是单个 tensor 或者 batched tensor，需通用处理
+    
+    TARGET_GLOBAL_DIM = 18  # 新的目标维度
+    # 获取当前维度
+    current_dim = state.global_numeric.shape[-1]
+    
+    if current_dim < TARGET_GLOBAL_DIM:
+        diff = TARGET_GLOBAL_DIM - current_dim
+        # 创建全 0 的 padding
+        # 保持和原 tensor 一样的 batch 维度 (如果有)
+        prefix_shape = state.global_numeric.shape[:-1]
+        padding_shape = (*prefix_shape, diff)
+        
+        padding = torch.zeros(padding_shape, dtype=state.global_numeric.dtype, device=state.global_numeric.device)
+        
+        # 拼接到最后
+        state.global_numeric = torch.cat([state.global_numeric, padding], dim=-1)
 
 def run_trainer():
     # Initialize WandB

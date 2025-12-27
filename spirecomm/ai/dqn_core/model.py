@@ -72,7 +72,7 @@ class DQNModel(nn.Module): # 这实际上是一个 Dueling Branching Q-Network
 @dataclass
 class SpireConfig:
     # --- 基础维度 (对应 Game/Character 类中的定义) ---
-    numeric_global_dim: int = 17    # 全局数值特征维度
+    numeric_global_dim: int = 18    # 全局数值特征维度
     numeric_monster_dim: int = 9    # 单个怪物的数值特征维度
     numeric_player_dim: int = 5     # 玩家数值特征维度
     

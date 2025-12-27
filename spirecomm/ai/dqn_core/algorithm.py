@@ -303,8 +303,8 @@ class SpireAgent:
                     clean_q = flat_q[flat_q > -1e8].detach().cpu().numpy()
                     if len(clean_q) > 0:
                         metrics["dist/q_value_hist"] = wandb.Histogram(clean_q)
-                    FLOOR_IDX = 2
-                    MAX_FLOOR = 56
+                    FLOOR_IDX = 3
+                    MAX_FLOOR = 60
                     if hasattr(batch_state, 'global_numeric'):
                         floors = (batch_state.global_numeric[:, FLOOR_IDX] * MAX_FLOOR).long().cpu().numpy()
                         metrics["dist/floor_hist"] = wandb.Histogram(floors)

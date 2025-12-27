@@ -1,4 +1,6 @@
 from dataclasses import dataclass, field
+
+from sympy import false
 from spirecomm.ai.constants import (
     MAX_CHOOSE_COUNT, MAX_HAND_SIZE, MAX_MONSTER_COUNT, MAX_POTION_COUNT, 
     MAX_DECK_SIZE, MAX_ORB_COUNT, MAX_POWER_COUNT, MAX_MAP_NODE_COUNT, 
@@ -31,6 +33,10 @@ class GameStateProcessor:
     这个实现将具体的向量化逻辑委托给 `Game` 对象自身的 `get_vector` 方法。
     """
     shop_visited: bool = False
+    cards_visited: List[bool] = None
+    current_card_reward_index: int = -1 # 标记当前进入的是第几个卡牌奖励房间，方便记录访问情况
+    max_card_reward_count: int = 0
+
     def get_state_tensor(self, game: Game) -> SpireState:
         """
         从 Game 对象获取完整的 SpireState 对象。
@@ -38,9 +44,9 @@ class GameStateProcessor:
         """
         
         # ==========================================
-        # 1. Global Numeric (17 dim)
+        # 1. Global Numeric (18 dim)
         # ==========================================
-        # MaxHP(1) + CurHP(1) + Ratio(1) + Floor(1) + Act(4) + Gold(1) + Class(4) + Ascension(1) + Boss(3)
+        # MaxHP(1) + CurHP(1) + Ratio(1) + Floor(1) + Act(4) + Gold(1) + Class(4) + Ascension(1) + Boss(3) + isOverkillBlock(1)
         
         # Act One-hot
         act_onehot = F.one_hot(torch.tensor(int(game.act) - 1, dtype=torch.long).clamp(0, 3), num_classes=4).float()
@@ -58,7 +64,15 @@ class GameStateProcessor:
         opts = act_boss_options.get(game.act, None)
         if opts and game.act_boss in opts:
             boss_onehot[opts.index(game.act_boss)] = 1.0
-
+        # 计算所有怪物的总攻击意图值（仅当需要时使用）
+        total_monster_attack_intent = 0
+        for m in game.monsters:
+            if m.move_adjusted_damage > 0:
+                total_monster_attack_intent += m.move_adjusted_damage * m.move_hits
+        is_over_kill_block = False
+        if game.in_combat:
+            if game.player.block > total_monster_attack_intent:
+                is_over_kill_block = True
         global_numeric = torch.cat([
             torch.tensor([norm_linear_clip(game.max_hp, 80)], dtype=torch.float32),
             torch.tensor([norm_linear_clip(game.current_hp, 150)], dtype=torch.float32),
@@ -68,7 +82,8 @@ class GameStateProcessor:
             torch.tensor([norm_linear_clip(game.gold, 1000)], dtype=torch.float32), # 超过1000的金币其实都没什么必要了也没什么可能了
             class_onehot,
             torch.tensor([minmax_normalize(game.ascension_level if game.ascension_level is not None else 0, 0, 20)], dtype=torch.float32),
-            boss_onehot
+            boss_onehot,
+            torch.tensor([1.0 if is_over_kill_block else 0.0], dtype=torch.float32)
         ])
 
         # ==========================================
@@ -319,6 +334,18 @@ class GameStateProcessor:
     def get_available_actions(self, game: Game) -> List[BaseAction]:
         """从 game_state 解析出所有合法的结构化动作对象列表"""
         actions = []
+        # 以下为特殊处理：重置actions列表
+        # 当房间为COMBAT_REWARD时，直接根据奖励内容，直接要求模型必须把金币和药水先选了！这是常识，避免模型需要学很多step
+        if game.screen_type == ScreenType.COMBAT_REWARD:
+            for i, reward in enumerate(game.screen.rewards):
+                # 如果有金币，或者是药水且药水栏未满,或者遗物，或者被偷的金币
+                if reward.reward_type == RewardType.GOLD or (reward.reward_type == RewardType.POTION and not game.are_potions_full()) or reward.reward_type == RewardType.RELIC or reward.reward_type == RewardType.STOLEN_GOLD:
+                    # 直接只添加这些必须先选的选项
+                    actions = []
+                    actions.append(ChooseAction(type=ActionType.CHOOSE, choice_idx=i, decomposed_type=DecomposedActionType.CHOOSE))
+                    break
+        if len(actions) > 0:
+            return actions
         
         # choose 动作
         if game.choice_available and "choose" in game.available_commands:
@@ -332,6 +359,12 @@ class GameStateProcessor:
                         # 由于选择很有可能是相同的卡牌，需通过 uuid 来判断
                         selected_cards_uuids = [c.uuid for c in game.screen.selected_cards]
                         if game.screen.cards[i].uuid in selected_cards_uuids:
+                            continue
+                # 访问过卡牌奖励并skip之后，不能再选已经选过的卡牌了
+                if game.screen_type == ScreenType.COMBAT_REWARD:
+                    self.max_card_reward_count = len(game.screen.rewards)
+                    if self.cards_visited:
+                        if self.cards_visited[i]:
                             continue
                 # 药水相关：
                 if game.are_potions_full():
@@ -452,16 +485,7 @@ class GameStateProcessor:
         if "leave" in game.available_commands:
             actions.append(SingleAction(type=ActionType.LEAVE, decomposed_type=DecomposedActionType.LEAVE))
         
-        # 以下为特殊处理：重置actions列表
-        # 当房间为COMBAT_REWARD时，直接根据奖励内容，直接要求模型必须把金币和药水先选了！这是常识，避免模型需要学很多step
-        if game.screen_type == ScreenType.COMBAT_REWARD:
-            for i, reward in enumerate(game.screen.rewards):
-                # 如果有金币，或者是药水且药水栏未满
-                if reward.reward_type == RewardType.GOLD or (reward.reward_type == RewardType.POTION and not game.are_potions_full()) or reward.reward_type == RewardType.RELIC or reward.reward_type == RewardType.STOLEN_GOLD:
-                    # 直接只添加这些必须先选的选项
-                    actions = []
-                    actions.append(ChooseAction(type=ActionType.CHOOSE, choice_idx=i, decomposed_type=DecomposedActionType.CHOOSE))
-                    break
+        
         return actions
     
 if __name__ == "__main__":
