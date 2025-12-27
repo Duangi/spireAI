@@ -70,7 +70,7 @@ class GameStateProcessor:
             if m.move_adjusted_damage > 0:
                 total_monster_attack_intent += m.move_adjusted_damage * m.move_hits
         is_over_kill_block = False
-        if game.in_combat:
+        if game.in_combat and game.player:
             if game.player.block > total_monster_attack_intent:
                 is_over_kill_block = True
         global_numeric = torch.cat([

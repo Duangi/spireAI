@@ -2,83 +2,73 @@ import torch
 import os
 from spirecomm.utils.path import get_root_dir
 
-# --- 配置你要检查的文件名 ---
-FILENAME = "step_452000.pth" 
-# FILENAME = "latest.pth" # 或者是这个，看你想查哪个
+# --- 配置 ---
+FILENAME = "step_670000.pth" 
 
-def inspect_checkpoint():
-    file_path = os.path.join(get_root_dir(), "models", FILENAME)
+def check_model_dimensions():
+    path = os.path.join(get_root_dir(), "models", FILENAME)
 
-    if not os.path.exists(file_path):
-        print(f"❌ 找不到文件: {file_path}")
+    if not os.path.exists(path):
+        print(f"❌ 找不到文件: {path}")
         return
 
-    print(f"📂 正在读取: {file_path} ...")
+    print(f"📂 正在读取模型: {path} ...")
     
     try:
-        # weights_only=False 以兼容可能存在的自定义类
-        checkpoint = torch.load(file_path, map_location='cpu', weights_only=False)
-
-        # 先打印 training_steps / total_steps 信息
-        print("\n" + "="*40)
-        print("       训练步数信息 (training_steps)")
-        print("="*40)
-        ts = checkpoint.get("training_steps", None)
-        legacy_ts = checkpoint.get("total_steps", None)
-        if ts is not None:
-            print(f"✅ training_steps: {ts}")
-        else:
-            print("⚠️ 未找到 training_steps 字段")
-        if legacy_ts is not None:
-            print(f"(兼容字段) total_steps: {legacy_ts}")
-
-        if 'model' not in checkpoint:
-            print("❌ 文件中没有 'model' 键，可能不是有效的 checkpoint。")
-            return
-            
+        # 加载模型
+        checkpoint = torch.load(path, map_location='cpu', weights_only=False)
         state_dict = checkpoint['model']
-        
-        print("\n" + "="*40)
-        print("       关键层检查 (Shared Body)")
-        print("="*40)
-        
-        target_key = "shared_body.0.weight"
-        
-        if target_key in state_dict:
-            weight = state_dict[target_key]
-            shape = weight.shape
-            print(f"🎯 层名称: {target_key}")
-            print(f"📏 维度: {shape}")
-            
-            # 自动判断逻辑
-            input_dim = shape[1] # [Output, Input]
-            
-            if input_dim == 1920:
-                print("\n✅ [判定]: 這是 **新模型 (1920)**。")
-                print("   包含: DrawPile(128) + ExhaustPile(128)。")
-                print("   可以直接运行新的 trainer.py。")
-            elif input_dim == 1664:
-                print("\n⚠️ [判定]: 這是 **旧模型 (1664)**。")
-                print("   缺失: DrawPile 和 ExhaustPile。")
-                print("   需要运行修复脚本进行扩容。")
-            else:
-                print(f"\n❓ [判定]: 未知维度 ({input_dim})。")
-        else:
-            print(f"❌ 未找到 {target_key} 层，模型结构可能不同。")
 
-        print("\n" + "-"*40)
-        print("       其他层维度预览 (前10个)")
-        print("-"*40)
-        count = 0
-        for key, value in state_dict.items():
-            print(f"{key}: {value.shape}")
-            count += 1
-            if count >= 10:
-                print("... (其余省略)")
-                break
+        print("-" * 50)
+
+        # --- 检查点 1: 全局数值层 (Global Numeric) ---
+        # 目标: [128, 18]
+        key_global = "global_num_enc.weight"
+        if key_global in state_dict:
+            w = state_dict[key_global]
+            print(f"🎯 检查层: {key_global}")
+            print(f"   实际维度: {w.shape}")
+            
+            if w.shape[1] == 18:
+                print("   ✅ [通过] 已成功扩容到 18 维 (包含格挡溢出特征)。")
+            elif w.shape[1] == 17:
+                print("   ❌ [失败] 仍然是旧的 17 维。修复脚本可能未生效。")
+            else:
+                print(f"   ❓ [未知] 奇怪的维度: {w.shape[1]}")
+        else:
+            print(f"❌ 找不到层: {key_global}")
+
+        print("-" * 50)
+
+        # --- 检查点 2: 主干层 (Shared Body) ---
+        # 目标: [1024, 1920] (确保之前的修复没被覆盖)
+        key_body = "shared_body.0.weight"
+        if key_body in state_dict:
+            w = state_dict[key_body]
+            print(f"🎯 检查层: {key_body}")
+            print(f"   实际维度: {w.shape}")
+            
+            if w.shape[1] == 1920:
+                print("   ✅ [通过] 维持在 1920 维 (包含抽牌/消耗堆)。")
+            else:
+                print(f"   ⚠️ [警告] 维度不对！期望 1920，实际 {w.shape[1]}")
+        
+        print("-" * 50)
+        
+        # --- 检查点 3: 怪物数值层 (Monster Numeric) ---
+        # 目标: [128, 9] (确认你没有改动过这个)
+        key_monster = "monster_num_proj.weight"
+        if key_monster in state_dict:
+            w = state_dict[key_monster]
+            print(f"🎯 检查层: {key_monster}")
+            print(f"   实际维度: {w.shape}")
+            if w.shape[1] == 9:
+                print("   ✅ [通过] 维度为 9。")
+            else:
+                print(f"   ℹ️ [提示] 维度为 {w.shape[1]} (如果你改过Monster特征这是正常的)。")
 
     except Exception as e:
-        print(f"❌ 读取发生错误: {e}")
+        print(f"❌ 读取发生严重错误: {e}")
 
 if __name__ == "__main__":
-    inspect_checkpoint()
+    check_model_dimensions()
