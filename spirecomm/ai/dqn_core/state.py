@@ -33,9 +33,9 @@ class GameStateProcessor:
     这个实现将具体的向量化逻辑委托给 `Game` 对象自身的 `get_vector` 方法。
     """
     shop_visited: bool = False
-    cards_visited: List[bool] = None
+    cards_visited: set = field(default_factory=set)
     current_card_reward_index: int = -1 # 标记当前进入的是第几个卡牌奖励房间，方便记录访问情况
-    max_card_reward_count: int = 0
+    # max_card_reward_count: int = 0
 
     def get_state_tensor(self, game: Game) -> SpireState:
         """
@@ -362,10 +362,8 @@ class GameStateProcessor:
                             continue
                 # 访问过卡牌奖励并skip之后，不能再选已经选过的卡牌了
                 if game.screen_type == ScreenType.COMBAT_REWARD:
-                    self.max_card_reward_count = len(game.screen.rewards)
-                    if self.cards_visited:
-                        if self.cards_visited[i]:
-                            continue
+                    if i in self.cards_visited:
+                        continue
                 # 药水相关：
                 if game.are_potions_full():
                     # 这里是假设有除了combat_reward以外的choose选项会有potion

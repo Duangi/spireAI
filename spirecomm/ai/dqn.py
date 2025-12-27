@@ -54,9 +54,8 @@ class DQNAgent:
                 raise RuntimeError(f"无法加载模型: {e}")
     def _init_card_reward_tracking(self):
         # 初始化卡牌奖励追踪
-        self.state_processor.cards_visited = None
+        self.state_processor.cards_visited.clear()
         self.state_processor.current_card_reward_index = -1
-        self.state_processor.max_card_reward_count = 0
     def get_next_action_in_game(self, game_state:Game):
         """
         这是由Coordinator在游戏状态改变时调用的核心回调函数。
@@ -122,11 +121,10 @@ class DQNAgent:
             if chosen_action.decomposed_type == DecomposedActionType.CHOOSE:
                 self._init_card_reward_tracking()
             elif chosen_action.decomposed_type == DecomposedActionType.SKIP:
-                if self.state_processor.cards_visited is None:
-                    num_rewards = self.state_processor.max_card_reward_count
-                    self.state_processor.cards_visited = [False] * num_rewards
-                # 标记当前选择的卡牌奖励为已访问
-                self.state_processor.cards_visited[self.state_processor.current_card_reward_index] = True
+                idx = self.state_processor.current_card_reward_index
+                if idx != -1:
+                    # 【修改】使用 add 加入集合，永远不会越界
+                    self.state_processor.cards_visited.add(idx)
         
 
         # --- 为下一步做准备 ---
