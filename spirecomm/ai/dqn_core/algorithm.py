@@ -10,6 +10,7 @@ from spirecomm.ai.constants import MAX_HAND_SIZE, MAX_MONSTER_COUNT, MAX_DECK_SI
 import os
 import datetime
 import wandb
+import json
 
 from spirecomm.ai.absolute_logger import AbsoluteLogger, LogType
 from spirecomm.ai.dqn_core.action import BaseAction, DecomposedActionType, PlayAction, ChooseAction, PotionDiscardAction, PotionUseAction, SingleAction, ActionType
@@ -68,6 +69,32 @@ class SpireAgent:
         self.is_training = True
         self.absolute_logger = AbsoluteLogger(LogType.STATE)
         self.absolute_logger.start_episode()
+    def reload_config_from_file(self):
+        """尝试从外部文件热更新参数"""
+        
+        config_path = os.path.join(get_root_dir(), "dynamic_config.json")
+        
+        if not os.path.exists(config_path):
+            return
+
+        try:
+            with open(config_path, 'r') as f:
+                data = json.load(f)
+                
+            # 读取并更新 exploration_total_steps
+            new_total_steps = data.get("exploration_total_steps")
+            
+            if new_total_steps and new_total_steps != self.exploration_total_steps:
+                print(f"\n[Hot Reload] 检测到配置变更: Total Steps {self.exploration_total_steps} -> {new_total_steps}")
+                self.exploration_total_steps = int(new_total_steps)
+                
+                # 立即强制刷新温度
+                self.update_temperature()
+                print(f"[Hot Reload] 温度已更新为: {self.temperature:.4f}")
+                
+        except Exception as e:
+            # 忽略读取错误（防止文件正在保存时读取报错）
+            pass
     def save_model(self, path):
         """保存模型，记录 training_steps（唯一权威步数）。"""
         torch.save({
@@ -75,6 +102,7 @@ class SpireAgent:
             'optimizer': self.optimizer.state_dict(),
             'config': self.cfg,
             'training_steps': int(self.training_steps),
+            'exploration_total_steps': self.exploration_total_steps
         }, path)
 
         # 如果路径名中包含 step_xxx，则同步更新 training_steps
@@ -138,6 +166,13 @@ class SpireAgent:
                 ts = 300000
 
             self.training_steps = ts
+
+            # 【新增】同步目标步数
+            if 'exploration_total_steps' in checkpoint:
+                new_target = int(checkpoint['exploration_total_steps'])
+                if new_target != self.exploration_total_steps:
+                    sys.stderr.write(f"[INFO] 检测到配置变更: Total Steps {self.exploration_total_steps} -> {new_target}\n")
+                    self.exploration_total_steps = new_target
 
             # 4. 同步温度
             try:

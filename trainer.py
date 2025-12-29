@@ -245,6 +245,8 @@ def run_trainer():
                         shutil.copyfile(save_path, latest_path)
                     except Exception:
                         pass
+                if current_step % TARGET_UPDATE_INTERVAL == 0:
+                    agent.dqn_algorithm.reload_config_from_file()
 
 if __name__ == "__main__":
     run_trainer()
