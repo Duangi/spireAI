@@ -56,7 +56,7 @@ class SpireAgent:
         
         # --- 经验回放 ---
         # 存储格式: (state: SpireState, action: object, reward: float, next_state: SpireState, done: bool)
-        self.memory = deque(maxlen=5000) 
+        self.memory = deque(maxlen=100000) 
         
         # --- 训练超参数 ---
         self.batch_size = 256
