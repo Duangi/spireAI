@@ -126,7 +126,8 @@ class SpireAgent:
                 try:
                     self.policy_net.load_state_dict(checkpoint['model'])
                     self.target_net.load_state_dict(checkpoint['model'])
-                    sys.stderr.write(f"[INFO] 成功加载模型权重: {path}\n")
+                    # 用英文输出：
+                    sys.stderr.write(f"[INFO] Success to load: {path}\n")
                 except RuntimeError as e:
                     sys.stderr.write(f"[ERROR] 模型权重加载失败 (维度不匹配?): {e}\n")
                     raise e

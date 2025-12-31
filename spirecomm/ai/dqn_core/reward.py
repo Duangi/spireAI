@@ -31,7 +31,7 @@ class RewardCalculator:
 
         # --- 资源管理奖励 ---
         # 每浪费1点能量结束回合的惩罚
-        self.WASTE_ENERGY_PENALTY = -3.0 # 降低惩罚，初期随机策略容易浪费能量
+        self.WASTE_ENERGY_PENALTY = -10.0 # 降低惩罚，初期随机策略容易浪费能量
         # 每获得1点金钱的奖励  0.1的时候战斗结束的钱都不捡了
         self.GOLD_GAINED_REWARD = 0.5
         # 每被偷1点钱的惩罚
