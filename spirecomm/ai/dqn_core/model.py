@@ -301,7 +301,7 @@ class FeatureFusion(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(128 + numeric_dim, hidden_dim),
-            nn.ReLU(),
+            nn.LeakyReLU(0.01),
             nn.Linear(hidden_dim, output_dim)
         )
     def forward(self, emb, feats):
@@ -314,7 +314,7 @@ class PowerEncoder(nn.Module):
         self.emb = emb_layer
         self.feat_proc = nn.Sequential(
             nn.Linear(config.feat_dim_power, config.embed_dim),
-            nn.ReLU()
+            nn.LeakyReLU(0.01)
         )
     def forward(self, ids, feats):
         return self.emb(ids) + self.feat_proc(feats)
@@ -326,7 +326,7 @@ class OrbEncoder(nn.Module):
         self.emb = emb_layer
         self.feat_proc = nn.Sequential(
             nn.Linear(config.feat_dim_orb, config.embed_dim),
-            nn.ReLU()
+            nn.LeakyReLU(0.01)
         )
     def forward(self, ids, feats):
         return self.emb(ids) + self.feat_proc(feats)
@@ -338,7 +338,7 @@ class MapEncoder(nn.Module):
         self.emb = nn.Embedding(config.room_vocab_size, config.embed_dim, padding_idx=0)
         self.net = nn.Sequential(
             nn.Linear(config.embed_dim + 2, config.pooler_hidden_dim),
-            nn.ReLU()
+            nn.LeakyReLU(0.01)
         )
     def forward(self, ids, coords, mask):
         x = self.emb(ids)
@@ -363,18 +363,18 @@ class ScreenEncoder(nn.Module):
         
         self.item_feat_enc = nn.Sequential(
             nn.Linear(config.feat_dim_screen_item, config.embed_dim),
-            nn.ReLU()
+            nn.LeakyReLU(0.01)
         )
         self.pooler = nn.Sequential(
             nn.Linear(config.embed_dim, dim_items),
-            nn.ReLU()
+            nn.LeakyReLU(0.01)
         )
 
         # 2. 【关键修复】输出投影层
         # 将内部拼接后的维度 (32 + 32 + 128 = 192) 统一映射回 config.feat_dim (128)
         self.output_proj = nn.Sequential(
             nn.Linear(dim_type + dim_misc + dim_items, config.feat_dim),
-            nn.ReLU()
+            nn.LeakyReLU(0.01)
         )
 
     def forward(self, type_id, misc, item_ids, item_feats):
@@ -401,7 +401,7 @@ class ItemScorer(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(config.context_dim + config.feat_dim, config.scorer_hidden_dim),
-            nn.ReLU(),
+            nn.LeakyReLU(0.01),
             nn.Linear(config.scorer_hidden_dim, 1)
         )
     def forward(self, context, items, mask):
@@ -445,8 +445,16 @@ class SpireDQN(nn.Module):
         self.monster_num_proj = nn.Linear(config.numeric_monster_dim, config.embed_dim)
         
         # --- 4. 全局数值处理 ---
-        self.global_num_enc = nn.Linear(config.numeric_global_dim, config.feat_dim)
-        self.player_num_enc = nn.Linear(config.numeric_player_dim, config.feat_dim)
+        self.global_num_enc = nn.Sequential(
+            nn.Linear(config.numeric_global_dim, config.feat_dim),
+            nn.LeakyReLU(0.01) # 关键在这里！允许微小的负梯度回传
+        )
+        
+        
+        self.player_num_enc = nn.Sequential(
+            nn.Linear(config.numeric_player_dim, config.feat_dim),
+            nn.LeakyReLU(0.01)
+        )
 
         # --- 5. Context Body ---
         # 计算 Context 输入维度 (根据你的模块数量调整)
@@ -459,9 +467,9 @@ class SpireDQN(nn.Module):
         self.shared_body = nn.Sequential(
             nn.Linear(total_ctx, config.context_dim),
             nn.LayerNorm(config.context_dim),
-            nn.ReLU(),
+            nn.LeakyReLU(0.01),
             nn.Linear(config.context_dim, config.context_dim),
-            nn.ReLU()
+            nn.LeakyReLU(0.01)
         )
 
         # --- 6. Heads ---

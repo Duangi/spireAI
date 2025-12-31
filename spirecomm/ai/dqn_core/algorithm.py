@@ -124,20 +124,20 @@ class SpireAgent:
             # 1. 加载权重
             if 'model' in checkpoint:
                 try:
-                    self.policy_net.load_state_dict(checkpoint['model'])
-                    self.target_net.load_state_dict(checkpoint['model'])
-                    # 用英文输出：
+                    # 使用 strict=False 忽略掉不匹配的 Encoder 层（让它们保持随机初始化）
+                    self.policy_net.load_state_dict(checkpoint['model'], strict=False)
+                    self.target_net.load_state_dict(checkpoint['model'], strict=False)
                     sys.stderr.write(f"[INFO] Success to load: {path}\n")
                 except RuntimeError as e:
                     sys.stderr.write(f"[ERROR] 模型权重加载失败 (维度不匹配?): {e}\n")
                     raise e
 
-            # 2. 加载优化器（仅在训练端真正使用）
-            if 'optimizer' in checkpoint and self.is_training:
-                try:
-                    self.optimizer.load_state_dict(checkpoint['optimizer'])
-                except Exception as e:
-                    sys.stderr.write(f"[WARN] 优化器加载失败 (将被重置): {e}\n")
+            # 2. 加载优化器（保持注释掉，因为维度变了，旧优化器不能用）
+            # if 'optimizer' in checkpoint and self.is_training:
+            #     try:
+            #         self.optimizer.load_state_dict(checkpoint['optimizer'])
+            #     except Exception as e:
+            #         sys.stderr.write(f"[WARN] 优化器加载失败 (将被重置): {e}\n")
 
             # 3. 恢复 training_steps
             ts = 0
@@ -147,7 +147,7 @@ class SpireAgent:
                 except Exception:
                     ts = 0
             elif 'total_steps' in checkpoint:
-                # 兼容旧 checkpoint，把 total_steps 当成 training_steps
+                # 兼容旧 checkpoint
                 try:
                     ts = int(checkpoint['total_steps'])
                 except Exception:

@@ -1,5 +1,7 @@
+from calendar import c
 import sys
 import time
+from spirecomm.ai.absolute_logger import AbsoluteLogger, LogType
 from spirecomm.ai.dqn_core.algorithm import SpireAgent
 from spirecomm.ai.dqn_core.state import GameStateProcessor
 from spirecomm.ai.dqn_core.reward import RewardCalculator
@@ -11,7 +13,7 @@ from spirecomm.ai.tests.test_case.game_state_test_cases import test_cases
 from spirecomm.ai.dqn_core.action import DecomposedActionType
 from spirecomm.ai.dqn_core.wandb_logger import WandbLogger
 import torch
-from spirecomm.ai.dqn_core.model import SpireConfig
+from spirecomm.ai.dqn_core.model import SpireConfig, SpireState
 
 
 class DQNAgent:
@@ -52,10 +54,87 @@ class DQNAgent:
                 self.load_model(model_path)
             except Exception as e:
                 raise RuntimeError(f"无法加载模型: {e}")
+        self.absolute_logger = AbsoluteLogger(log_type=LogType.PROGRESS)
+        self.absolute_logger.start_episode()
+
     def _init_card_reward_tracking(self):
         # 初始化卡牌奖励追踪
         self.state_processor.cards_visited.clear()
         self.state_processor.current_card_reward_index = -1
+    def _log_detailed_debug_info(self, game: Game, state: SpireState):
+        """
+        深度调试：对比 Game 对象和 SpireState Tensor，检查数据一致性。
+        输出到 AbsoluteLogger。
+        """
+        msg = []
+        msg.append(f"\n{'='*20} [STEP DEBUG INFO] {'='*20}")
+        
+        # --- 1. 玩家数值一致性检查 (Player Numeric) ---
+        # Tensor 结构: [CurHP, MaxHP, Ratio, Block, Energy] (假设顺序)
+        try:
+            p_num = state.player_numeric.detach().cpu().numpy()
+            # 反归一化 (根据你的 get_tensor_data 逻辑)
+            t_hp = p_num[0] * 100
+            t_max_hp = p_num[1] * 100
+            t_block = p_num[3] * 50
+            t_energy = p_num[4] * 5
+            
+            msg.append(f"[Player Status]")
+            msg.append(f"  HP:     Game={game.current_hp}/{game.max_hp} | Tensor={t_hp:.1f}/{t_max_hp:.1f}")
+            msg.append(f"  Block:  Game={game.player.block} | Tensor={t_block:.1f}")
+            msg.append(f"  Energy: Game={game.player.energy} | Tensor={t_energy:.1f}")
+            
+            # 严重警告：如果能量不对，直接标记
+            if abs(game.player.energy - t_energy) > 0.1:
+                msg.append(f"  🔴🔴🔴 能量数据严重不匹配！StateProcessor 可能卡死！")
+        except Exception as e:
+            msg.append(f"  [Error Reading Player Tensor]: {e}")
+
+        # --- 2. 手牌信息 (Hand) ---
+        msg.append(f"[Hand Cards] (Count: {len(game.hand)})")
+        for i, card in enumerate(game.hand):
+            # 检查是否可打出
+            playable_str = "√" if card.is_playable else "x"
+            if card.cost > game.player.energy: playable_str += "(NoEnergy)"
+            
+            msg.append(f"  [{i}] {card.name} (Cost:{card.cost}) {playable_str} | ID:{card.card_id}")
+            
+            # 可选：检查 Tensor 里的 ID 是否对应 (需反查 Hash，较麻烦，暂略)
+            
+        # --- 3. 怪物信息 (Monsters) ---
+        msg.append(f"[Monsters]")
+        if game.monsters:
+            for i, m in enumerate(game.monsters):
+                alive_str = "ALIVE" if not m.is_gone and m.current_hp > 0 else "DEAD"
+                intent_str = f"{m.intent}" if m.intent else "None"
+                dmg_str = f"Dmg:{m.move_adjusted_damage}x{m.move_hits}" if m.move_adjusted_damage else ""
+                
+                # 检查 Tensor 里的 is_gone 位 (假设在 numeric 的最后两位)
+                try:
+                    m_num = state.monster_numeric[i].detach().cpu().numpy()
+                    # 假设倒数第一位是 is_gone
+                    t_is_gone = m_num[-1]
+                    msg.append(f"  [{i}] {m.name} ({alive_str}) HP:{m.current_hp} | {intent_str} {dmg_str} | Tensor_Gone:{t_is_gone:.1f}")
+                except:
+                    msg.append(f"  [{i}] {m.name} ({alive_str}) ... Tensor Error")
+        else:
+            msg.append("  (No Monsters)")
+
+        # --- 4. 玩家 Buff (Powers) ---
+        msg.append(f"[Player Powers]")
+        if game.player.powers:
+            for p in game.player.powers:
+                msg.append(f"  - {p.power_name} ({p.amount})")
+        else:
+            msg.append("  (None)")
+            
+        msg.append("="*60 + "\n")
+        
+        # 写入日志
+        log_str = "\n".join(msg)
+        if self.absolute_logger:
+            self.absolute_logger.write(log_str)
+
     def get_next_action_in_game(self, game_state:Game):
         """
         这是由Coordinator在游戏状态改变时调用的核心回调函数。
@@ -97,6 +176,8 @@ class DQNAgent:
         # --- 决策 ---
         # 1. 获取当前状态的向量和合法的动作掩码
         current_state_tensor = self.state_processor.get_state_tensor(game_state)
+        if game_state.in_combat:
+            self._log_detailed_debug_info(game_state, current_state_tensor)
         # game_state 是 Game 对象，直接访问属性
         # 统一读取一次 available_commands 并在后续所有日志/判定中复用，确保一致性
         available_commands = game_state.available_commands
