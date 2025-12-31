@@ -1,3 +1,6 @@
+import os
+import json
+import sys
 from typing import List
 from spirecomm.ai.dqn_core.action import BaseAction
 from spirecomm.spire.game import Game
@@ -6,6 +9,7 @@ from spirecomm.ai.absolute_logger import AbsoluteLogger, LogType
 # 用于在需要时生成 game.state_hash
 from spirecomm.ai.dqn_core.state import GameStateProcessor
 from spirecomm.spire.screen import CombatReward, CombatRewardScreen, ScreenType
+from spirecomm.utils.path import get_root_dir
 
 class RewardCalculator:
     """
@@ -83,6 +87,48 @@ class RewardCalculator:
         self.absolute_logger = AbsoluteLogger(LogType.REWARD)
         self.absolute_logger.start_episode()
 
+    def reload_config(self):
+        """如果需要动态调整奖励参数，可以在这里实现从配置文件加载的逻辑。"""
+        
+        config_path = os.path.join(get_root_dir(), "dynamic_config.json")
+        
+        if not os.path.exists(config_path):
+            return
+
+        try:
+            with open(config_path, 'r') as f:
+                data = json.load(f)
+                
+            # 读取并更新 exploration_total_steps
+            reward_configs = data.get("reward")
+            
+            self.update_params(reward_configs)                
+        except Exception as e:
+            sys.stderr.write(f"[RewardCalculator] Error loading dynamic config: {e}\n")
+            
+    # --- 【新增】批量更新参数的方法 ---
+    def update_params(self, params_dict: dict):
+        """接收一个字典，动态更新奖励系数"""
+        if not params_dict:
+            return
+
+        updated_keys = []
+        for key, value in params_dict.items():
+            # 只有当类里已经有这个属性时才更新，防止拼写错误注入垃圾属性
+            if hasattr(self, key):
+                old_val = getattr(self, key)
+                # 类型转换，确保是 float
+                new_val = float(value)
+                
+                # 只有数值变了才更新
+                if old_val != new_val:
+                    setattr(self, key, new_val)
+                    updated_keys.append(f"{key}: {old_val} -> {new_val}")
+        
+        if updated_keys:
+            sys.stderr.write("[RewardCalculator] Updated reward parameters:\n")
+            for s in updated_keys:
+                sys.stderr.write(f"  - {s}\n")
     def calculate(self, prev_state: Game, next_state:Game, action:BaseAction=None, prev_prev_state: Game=None):
         """
         计算从 prev_state 转换到 next_state 所获得的奖励，并将各项明细通过 absolute_logger.write 输出，方便排查。

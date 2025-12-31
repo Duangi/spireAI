@@ -147,7 +147,9 @@ def run_worker():
                 current_model_step = step_num
             except Exception as e:
                 sys.stderr.write(f"Failed to load model: {e}\n")
-
+        # 更新 奖励
+        agent.reward_calculator.reload_config()
+        
         # Update memory saver context
         memory_saver.set_context(chosen_class, current_model_step)
 
