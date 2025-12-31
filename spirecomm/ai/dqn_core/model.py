@@ -416,7 +416,7 @@ class SpireDQN(nn.Module):
         )
         # 计算直连特征的总维度
         # global(18) + player(5) + 4 = 27
-        self.skip_dims = config.numeric_global_dim + config.numeric_player_dim + config.numeric_player_dim + 4
+        self.skip_dims = config.numeric_global_dim + config.numeric_player_dim + 4
         self.head_input_dim = config.context_dim + self.skip_dims
 
         # --- 6. Heads ---
