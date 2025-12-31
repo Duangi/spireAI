@@ -14,7 +14,7 @@ import json
 
 from spirecomm.ai.absolute_logger import AbsoluteLogger, LogType
 from spirecomm.ai.dqn_core.action import BaseAction, DecomposedActionType, PlayAction, ChooseAction, PotionDiscardAction, PotionUseAction, SingleAction, ActionType
-from spirecomm.ai.dqn_core.model import DQNModel, SpireConfig, SpireDQN, SpireOutput, SpireState
+from spirecomm.ai.dqn_core.model import SpireConfig, SpireDQN, SpireOutput, SpireState
 from spirecomm.ai.dqn_core.state import GameStateProcessor
 from spirecomm.spire.card import Card
 from spirecomm.spire.game import Game
