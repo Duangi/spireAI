@@ -168,7 +168,7 @@ class DualPooling(nn.Module):
         # 输入维度翻倍，因为拼接了 sum 和 max
         self.proj = nn.Sequential(
             nn.Linear(input_dim * 2, output_dim),
-            nn.ReLU()
+            nn.LeakyReLU(0.01)
         )
         
     def forward(self, x: torch.Tensor, mask=None):
@@ -338,15 +338,17 @@ class ScreenEncoder(nn.Module):
     
 class ItemScorer(nn.Module):
     """Dynamic Branching Head"""
-    def __init__(self, config: SpireConfig):
+    def __init__(self, config: SpireConfig, extended_context_dim: int):
         super().__init__()
+        input_dim = extended_context_dim + config.feat_dim
         self.net = nn.Sequential(
-            nn.Linear(config.context_dim + config.feat_dim, config.scorer_hidden_dim),
+            nn.Linear(input_dim, config.scorer_hidden_dim),
             nn.LeakyReLU(0.01),
             nn.Linear(config.scorer_hidden_dim, 1)
         )
-    def forward(self, context, items, mask):
-        ctx_exp = context.unsqueeze(1).expand(-1, items.shape[1], -1)
+    def forward(self, extended_context, items, mask):
+        num_items = items.shape[1]
+        ctx_exp = extended_context.unsqueeze(1).expand(-1, num_items, -1)
         combined = torch.cat([ctx_exp, items], dim=2)
         scores = self.net(combined).squeeze(-1)
         if mask is not None:
@@ -412,27 +414,31 @@ class SpireDQN(nn.Module):
             nn.Linear(config.context_dim, config.context_dim),
             nn.LeakyReLU(0.01)
         )
+        # 计算直连特征的总维度
+        # global(18) + player(5) + 4 = 27
+        self.skip_dims = config.numeric_global_dim + config.numeric_player_dim + config.numeric_player_dim + 4
+        self.head_input_dim = config.context_dim + self.skip_dims
 
         # --- 6. Heads ---
         # 状态价值头 (Value)
         self.value_head = nn.Sequential(
-            nn.Linear(config.context_dim, config.scorer_hidden_dim),
+            nn.Linear(self.head_input_dim, config.scorer_hidden_dim),
             nn.LeakyReLU(0.01),
             nn.Linear(config.scorer_hidden_dim, 1)
         )
         
         # 动作类型头 (Advantage)
         self.action_type_head = nn.Sequential(
-            nn.Linear(config.context_dim, config.scorer_hidden_dim),
+            nn.Linear(self.head_input_dim, config.scorer_hidden_dim),
             nn.LeakyReLU(0.01),
             nn.Linear(config.scorer_hidden_dim, config.num_action_types)
         )
         self.scorers = nn.ModuleDict({
-            'card': ItemScorer(config),
-            'target': ItemScorer(config),
-            'choice': ItemScorer(config),
-            'potion_use': ItemScorer(config),
-            'potion_discard': ItemScorer(config)
+            'card': ItemScorer(config,self.head_input_dim),
+            'target': ItemScorer(config,self.head_input_dim),
+            'choice': ItemScorer(config,self.head_input_dim),
+            'potion_use': ItemScorer(config,self.head_input_dim),
+            'potion_discard': ItemScorer(config,self.head_input_dim)
         })
 
     def forward(self, state: SpireState) -> SpireOutput:
@@ -504,10 +510,30 @@ class SpireDQN(nn.Module):
         context = self.shared_body(raw_context)
 
         # ================= Phase 3: Scoring =================
-        
+        # 怪物总HP: monster_numeric [B, 5, 9] 的第 0 位求和
+        m_hps = state.monster_numeric[:, :, 0]
+        m_total_hp = m_hps.sum(dim=1, keepdim=True) # [B, 1]
+        # 怪物意图总伤: (伤害[index 4] * 段数[index 5]) 的求和
+        m_dmgs = (state.monster_numeric[:, :, 4] * state.monster_numeric[:, :, 5]).sum(dim=1, keepdim=True)
+        # 安全余量
+        safety_margin = state.player_numeric[:, 3:4] - m_dmgs
+        # 怪物存活数量
+        alive_count= (m_hps > 0).float().sum(dim=1, keepdim=True) / 5.0 # [B, 1]
+        math_hub = torch.cat([
+            m_total_hp,
+            m_dmgs,
+            safety_margin,
+            alive_count
+        ], dim=1)
+        extended_context = torch.cat([
+            context,
+            state.global_numeric,
+            state.player_numeric,
+            math_hub
+        ], dim=1)
         # Action Type
-        val = self.value_head(context)
-        adv = self.action_type_head(context)
+        val = self.value_head(extended_context)
+        adv = self.action_type_head(extended_context)
         q_action = val + (adv - adv.mean(dim=1, keepdim=True))
         
         if state.action_mask is not None:
@@ -515,7 +541,7 @@ class SpireDQN(nn.Module):
 
         # Branches
         def score(name, items, ids):
-            return self.scorers[name](context, items, mask=(ids != 0))
+            return self.scorers[name](extended_context, items, mask=(ids != 0))
 
         return SpireOutput(
             q_action_type = q_action,
