@@ -117,7 +117,7 @@ def run_trainer():
     print(f"Trainer started. Current Step: {current_step}")
     print(f"Monitoring {MEMORY_DIR} for new data...")
     print(f"Monitoring {MEMORY_REMOTE_DIR} for new data...")
-    
+    agent.dqn_algorithm.reload_config_from_file()
     # Main Loop
     while True:
         # 1. Scan for memory files
