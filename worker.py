@@ -16,6 +16,9 @@ MEMORY_DIR = os.path.join(get_root_dir(), "data", "memory")
 MODELS_DIR = os.path.join(get_root_dir(), "models")
 os.makedirs(MEMORY_DIR, exist_ok=True)
 
+# Detect device for this worker (prefer CUDA)
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 # --- Worker Logic ---
 
 class MemorySaver:
@@ -31,11 +34,11 @@ class MemorySaver:
 
     def save_transition(self, state, action, reward, next_state, done, reward_details, prev_game_state=None, next_game_state=None, prev_prev_game_state=None):
         # Store transition in memory buffer
-        # We store CPU tensors to save space/time if they are on GPU
-        if isinstance(state, torch.Tensor): state = state.cpu()
-        if isinstance(next_state, torch.Tensor): next_state = next_state.cpu()
-        
-        # Store raw game states for potential reward recalculation
+        # NOTE: Do not force CPU here; keep tensors on whatever device they are
+        # so that DQNAgent/SpireAgent can operate on GPU.
+        # If these tensors are already on GPU, trainer will move them as needed.
+        # state and next_state are expected to be tensors or SpireState objects.
+
         self.current_episode_data.append({
             "state_tensor": state,
             "action": action,
@@ -125,6 +128,17 @@ def run_worker():
     # play_mode=False enables exploration (Boltzmann sampling) instead of greedy selection
     # memory_callback ensures we save data instead of training locally
     agent = DQNAgent(play_mode=False, memory_callback=memory_saver.save_transition)
+
+    # If DQNAgent/SpireAgent supports device configuration, move to GPU here.
+    try:
+        if hasattr(agent.dqn_algorithm, "device"):
+            agent.dqn_algorithm.device = DEVICE
+        if hasattr(agent.dqn_algorithm, "policy_net"):
+            agent.dqn_algorithm.policy_net.to(DEVICE)
+        if hasattr(agent.dqn_algorithm, "target_net"):
+            agent.dqn_algorithm.target_net.to(DEVICE)
+    except Exception as e:
+        sys.stderr.write(f"[WARN] Failed to move agent to {DEVICE}: {e}\n")
     
     coordinator = Coordinator()
     coordinator.signal_ready()
@@ -134,7 +148,7 @@ def run_worker():
 
     player_class_cycle = itertools.cycle(PlayerClass)
     
-    sys.stderr.write("Worker started. Waiting for game...\n")
+    sys.stderr.write(f"Worker started on device {DEVICE}. Waiting for game...\n")
 
     current_model_step = 0
     
@@ -145,6 +159,11 @@ def run_worker():
             try:
                 agent.load_model(model_path)
                 current_model_step = step_num
+                # Ensure loaded weights are on the correct device
+                if hasattr(agent.dqn_algorithm, "policy_net"):
+                    agent.dqn_algorithm.policy_net.to(DEVICE)
+                if hasattr(agent.dqn_algorithm, "target_net"):
+                    agent.dqn_algorithm.target_net.to(DEVICE)
             except Exception as e:
                 sys.stderr.write(f"Failed to load model: {e}\n")
         # 更新 奖励

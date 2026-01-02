@@ -195,7 +195,7 @@ def main():
             agent.change_class(chosen_class)
 
             game_counter += 1
-            coordinator.play_one_game(chosen_class, ascension_level=0)
+            coordinator.play_one_game(chosen_class, ascension_level=1)
     except KeyboardInterrupt:
         pass
 
