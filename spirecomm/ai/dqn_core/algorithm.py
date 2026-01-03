@@ -133,11 +133,11 @@ class SpireAgent:
                     raise e
 
             # 2. 加载优化器（保持注释掉，因为维度变了，旧优化器不能用）
-            # if 'optimizer' in checkpoint and self.is_training:
-            #     try:
-            #         self.optimizer.load_state_dict(checkpoint['optimizer'])
-            #     except Exception as e:
-            #         sys.stderr.write(f"[WARN] 优化器加载失败 (将被重置): {e}\n")
+            if 'optimizer' in checkpoint and self.is_training:
+                try:
+                    self.optimizer.load_state_dict(checkpoint['optimizer'])
+                except Exception as e:
+                    sys.stderr.write(f"[WARN] 优化器加载失败 (将被重置): {e}\n")
 
             # 3. 恢复 training_steps
             ts = 0

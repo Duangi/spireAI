@@ -47,6 +47,9 @@ class RewardCalculator:
         self.POTION_USE_PENALTY = -30.0
         self.POTION_USE_BONUS = 0.0
 
+        # 留存药水的奖励
+        self.POTION_KEEP_BONUS = 10.0
+
         # 给一个赢得了战斗但是不捡金币的惩罚！浪费可耻
         self.WIN_BATTLE_NO_GOLD_PENALTY = -20.0
         # 赢得了战斗不捡遗物的惩罚
@@ -296,6 +299,14 @@ class RewardCalculator:
                     value = self.WIN_BATTLE_REWARD
                     total_reward += value
                     contributions.append(("赢得战斗", value, f"floor={prev_state.floor}"))
+            # 留存药水的奖励
+            if next_state.potions is not None:
+                kept_potions = [p for p in next_state.potions if p.potion_id != "Potion Slot" and p.name != "药水栏"]
+                if kept_potions:
+                    value = len(kept_potions) * self.POTION_KEEP_BONUS
+                    total_reward += value
+                    contributions.append(("留存药水", value, f"count={len(kept_potions)} * per={self.POTION_KEEP_BONUS}"))
+
         # 输掉战斗: 游戏结束
         if prev_state.in_game and not next_state.in_game:
             value = self.LOSE_BATTLE_REWARD
