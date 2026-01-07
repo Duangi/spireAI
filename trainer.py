@@ -67,33 +67,100 @@ def get_latest_model_path(player_class=None):
 # ========================================================
 def fix_legacy_state(state):
     """
-    原地修改 SpireState 对象，补全旧数据缺失的字段 (draw_pile/exhaust_pile)。
+    终极数据修复补丁：
+    不仅补全缺失字段，还强制将旧的维度(10)对齐到新维度(15)。
     """
-    # 必须与 model.py 中的 MAX_DECK_SIZE 保持一致，假设为 100
-    if not hasattr(state, 'draw_pile_ids'):
-        state.draw_pile_ids = torch.zeros(MAX_DECK_SIZE, dtype=torch.long)
-    if not hasattr(state, 'exhaust_pile_ids'):
-        state.exhaust_pile_ids = torch.zeros(MAX_DECK_SIZE, dtype=torch.long)
+    MAX_DECK_LEN = 100
+    TARGET_MONSTER_COUNT = 15  # 你现在设定的新上限
+    MONSTER_NUMERIC_DIM = 9   # 怪物数值特征维度
+    POWER_COUNT = 20          # 怪物Buff上限
 
-    # 修复全局数值维度 (17 -> 18)
-    # state.global_numeric 的形状通常是 [1, 17] (如果没 batch) 或 [17]
-    # 我们假设这里进来的可能是单个 tensor 或者 batched tensor，需通用处理
+    # 1. 修复 Draw/Exhaust 缺失 (保持原样)
+    if not hasattr(state, 'draw_pile_ids'):
+        state.draw_pile_ids = torch.zeros(MAX_DECK_LEN, dtype=torch.long)
+    if not hasattr(state, 'exhaust_pile_ids'):
+        state.exhaust_pile_ids = torch.zeros(MAX_DECK_LEN, dtype=torch.long)
+
+    # 2. 【核心修复】修复怪物维度不匹配 (10 -> 15)
+    # 检查 monster_ids 的长度
+    current_m_count = state.monster_ids.shape[0]
     
-    TARGET_GLOBAL_DIM = 18  # 新的目标维度
-    # 获取当前维度
-    current_dim = state.global_numeric.shape[-1]
-    
-    if current_dim < TARGET_GLOBAL_DIM:
-        diff = TARGET_GLOBAL_DIM - current_dim
-        # 创建全 0 的 padding
-        # 保持和原 tensor 一样的 batch 维度 (如果有)
-        prefix_shape = state.global_numeric.shape[:-1]
-        padding_shape = (*prefix_shape, diff)
+    if current_m_count < TARGET_MONSTER_COUNT:
+        diff = TARGET_MONSTER_COUNT - current_m_count
         
-        padding = torch.zeros(padding_shape, dtype=state.global_numeric.dtype, device=state.global_numeric.device)
+        # A. 补齐 ID 类 (LongTensor)
+        state.monster_ids = torch.cat([state.monster_ids, torch.zeros(diff, dtype=torch.long)])
+        state.monster_intent_ids = torch.cat([state.monster_intent_ids, torch.zeros(diff, dtype=torch.long)])
         
-        # 拼接到最后
-        state.global_numeric = torch.cat([state.global_numeric, padding], dim=-1)
+        # B. 补齐数值类 (FloatTensor [N, 9])
+        m_num_padding = torch.zeros((diff, MONSTER_NUMERIC_DIM), dtype=torch.float32)
+        state.monster_numeric = torch.cat([state.monster_numeric, m_num_padding], dim=0)
+        
+        # C. 补齐 Power IDs (LongTensor [N, 20])
+        m_pow_id_padding = torch.zeros((diff, POWER_COUNT), dtype=torch.long)
+        state.monster_power_ids = torch.cat([state.monster_power_ids, m_pow_id_padding], dim=0)
+        
+        # D. 补齐 Power Feats (FloatTensor [N, 20, 3])
+        m_pow_feat_padding = torch.zeros((diff, POWER_COUNT, 3), dtype=torch.float32)
+        state.monster_power_feats = torch.cat([state.monster_power_feats, m_pow_feat_padding], dim=0)
+
+    # 3. 修复 Global Numeric (17 -> 18) 如果之前没改彻底的话
+    if state.global_numeric.shape[-1] < 18:
+        diff_g = 18 - state.global_numeric.shape[-1]
+        g_padding = torch.zeros((*state.global_numeric.shape[:-1], diff_g), dtype=torch.float32)
+        state.global_numeric = torch.cat([state.global_numeric, g_padding], dim=-1)
+
+    return state
+
+def manage_archive(archive_dir, max_files=10000, max_gb=20):
+    """
+    管理归档文件夹：如果文件数量或总大小超过限制，则删除最早的文件。
+    :param archive_dir: 归档文件夹路径
+    :param max_files: 最大保留文件数
+    :param max_gb: 最大占用磁盘空间 (GB)
+    """
+    # 1. 获取所有 .pt 文件及其元数据
+    file_list = []
+    for root, _, filenames in os.walk(archive_dir):
+        for f in filenames:
+            if f.endswith(".pt"):
+                path = os.path.join(root, f)
+                try:
+                    stats = os.stat(path)
+                    # 记录 (文件路径, 修改时间, 文件大小)
+                    file_list.append({
+                        'path': path,
+                        'time': stats.st_mtime,
+                        'size': stats.st_size
+                    })
+                except OSError:
+                    continue
+
+    if not file_list:
+        return
+
+    # 2. 按时间排序 (从旧到新)
+    # 确保我们删掉的是最早产出的数据
+    file_list.sort(key=lambda x: x['time'])
+
+    total_count = len(file_list)
+    total_size_bytes = sum(f['size'] for f in file_list)
+    max_size_bytes = max_gb * 1024 * 1024 * 1024
+
+    # 3. 循环删除直到满足条件
+    files_deleted = 0
+    while (total_count > max_files or total_size_bytes > max_size_bytes) and file_list:
+        target = file_list.pop(0) # 弹出最老的文件
+        try:
+            os.remove(target['path'])
+            total_count -= 1
+            total_size_bytes -= target['size']
+            files_deleted += 1
+        except OSError as e:
+            print(f"清理失败: {target['path']}, 错误: {e}")
+
+    if files_deleted > 0:
+        print(f"清理归档: 删除了 {files_deleted} 个旧文件。当前占用: {total_size_bytes/1024**3:.2f} GB")
 
 def run_trainer():
     # Initialize WandB
@@ -245,6 +312,9 @@ def run_trainer():
                         shutil.copyfile(save_path, latest_path)
                     except Exception:
                         pass
+
+                    # 定期清理
+                    manage_archive(ARCHIVE_DIR, max_files=20000, max_gb=100)
                 if current_step % TARGET_UPDATE_INTERVAL == 0:
                     agent.dqn_algorithm.reload_config_from_file()
 

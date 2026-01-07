@@ -1,15 +1,14 @@
-#!/opt/miniconda3/envs/spire/bin/python3
 import os
 import sys
 import torch
 import itertools
+import time
+import random
 from datetime import datetime
 from spirecomm.communication.coordinator import Coordinator
 from spirecomm.spire.character import PlayerClass
 from spirecomm.ai.dqn import DQNAgent
-from spirecomm.ai.dqn_core.wandb_logger import WandbLogger
 from spirecomm.utils.path import get_root_dir
-
 
 # --- Configuration ---
 MEMORY_DIR = os.path.join(get_root_dir(), "data", "memory")
@@ -33,12 +32,6 @@ class MemorySaver:
         self.current_model_step = model_step
 
     def save_transition(self, state, action, reward, next_state, done, reward_details, prev_game_state=None, next_game_state=None, prev_prev_game_state=None):
-        # Store transition in memory buffer
-        # NOTE: Do not force CPU here; keep tensors on whatever device they are
-        # so that DQNAgent/SpireAgent can operate on GPU.
-        # If these tensors are already on GPU, trainer will move them as needed.
-        # state and next_state are expected to be tensors or SpireState objects.
-
         self.current_episode_data.append({
             "state_tensor": state,
             "action": action,
@@ -50,7 +43,6 @@ class MemorySaver:
             "next_game_state": next_game_state,
             "prev_prev_game_state": prev_prev_game_state
         })
-
         if done:
             self.flush_episode()
 
@@ -59,86 +51,52 @@ class MemorySaver:
             return
         
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        
-        # Determine save directory based on player class
         save_dir = MEMORY_DIR
-        class_name = "Unknown"
         if self.current_player_class:
-            class_name = self.current_player_class.name
-            save_dir = os.path.join(MEMORY_DIR, class_name)
+            save_dir = os.path.join(MEMORY_DIR, self.current_player_class.name)
             os.makedirs(save_dir, exist_ok=True)
             
-        # Filename format: step_{base_step}_{game_steps}_{timestamp}.pt
         game_steps = len(self.current_episode_data)
         filename = f"step_{self.current_model_step}_{game_steps}_{timestamp}.pt"
         filepath = os.path.join(save_dir, filename)
         
-        # Write to a temporary file first then rename to avoid partial reads
         temp_filepath = filepath + ".tmp"
         try:
             torch.save(self.current_episode_data, temp_filepath)
             os.rename(temp_filepath, filepath)
-            sys.stderr.write(f"Saved {len(self.current_episode_data)} transitions to {filename}\n")
+            sys.stderr.write(f"[Worker] Saved {game_steps} transitions to {filename}\n")
         except Exception as e:
             sys.stderr.write(f"Error saving memory: {e}\n")
         
         self.current_episode_data = []
         self.episode_count += 1
 
-def get_latest_model_path(player_class=None):
+def get_latest_model_path():
+    """仅用于获取当前最新模型的步数编号"""
     target_dir = MODELS_DIR
-    if player_class:
-        class_dir = os.path.join(MODELS_DIR, player_class.name)
-        if os.path.exists(class_dir):
-            target_dir = class_dir
-            
-    if not os.path.exists(target_dir):
-        return None, 0
-
-    # Logic to find the model with the highest step number
-    # Format: step_{step}.pth
     model_files = [f for f in os.listdir(target_dir) if f.startswith("step_") and f.endswith(".pth")]
-    
     latest_step = 0
-    latest_model_path = None
-    if len(model_files) == 0:
-        return None, 0
-
+    latest_path = None
     for f in model_files:
         try:
             step_num = int(f[len("step_"):-len(".pth")])
             if step_num > latest_step:
                 latest_step = step_num
-                latest_model_path = os.path.join(target_dir, f)
+                latest_path = os.path.join(target_dir, f)
         except ValueError:
             continue
-            
-    if latest_model_path:
-        return latest_model_path, latest_step
-    else:
-        return None, 0
+    return latest_path, latest_step
 
 def run_worker():
-    # Initialize WandB (optional, maybe for logging game stats)
-    # os.environ["WANDB_SILENT"] = "true"
-    # wandb_logger = WandbLogger(project_name="spire-ai-worker", run_name=f"Worker_{os.getpid()}")
     memory_saver = MemorySaver()
-    
-    # Initialize Agent
-    # play_mode=False enables exploration (Boltzmann sampling) instead of greedy selection
-    # memory_callback ensures we save data instead of training locally
     agent = DQNAgent(play_mode=False, memory_callback=memory_saver.save_transition)
 
-    # If DQNAgent/SpireAgent supports device configuration, move to GPU here.
+    # 移动模型到正确设备（初始）
     try:
-        if hasattr(agent.dqn_algorithm, "device"):
-            agent.dqn_algorithm.device = DEVICE
         if hasattr(agent.dqn_algorithm, "policy_net"):
             agent.dqn_algorithm.policy_net.to(DEVICE)
-        if hasattr(agent.dqn_algorithm, "target_net"):
-            agent.dqn_algorithm.target_net.to(DEVICE)
     except Exception as e:
-        sys.stderr.write(f"[WARN] Failed to move agent to {DEVICE}: {e}\n")
+        sys.stderr.write(f"[WARN] Initial device move failed: {e}\n")
     
     coordinator = Coordinator()
     coordinator.signal_ready()
@@ -148,37 +106,57 @@ def run_worker():
 
     player_class_cycle = itertools.cycle(PlayerClass)
     
-    sys.stderr.write(f"Worker started on device {DEVICE}. Waiting for game...\n")
-
+    # 状态跟踪变量
+    last_loaded_mtime = 0
     current_model_step = 0
-    
+    latest_model_file = os.path.join(MODELS_DIR, "latest.pth")
+
+    sys.stderr.write(f"Worker initialized on {DEVICE}. Entering main loop...\n")
+
     while True:
         chosen_class = next(player_class_cycle)
-        model_path, step_num = get_latest_model_path()
-        if model_path:
+        
+        # 1. 按需加载模型
+        if os.path.exists(latest_model_file):
             try:
-                agent.load_model(model_path)
-                current_model_step = step_num
-                # Ensure loaded weights are on the correct device
-                if hasattr(agent.dqn_algorithm, "policy_net"):
-                    agent.dqn_algorithm.policy_net.to(DEVICE)
-                if hasattr(agent.dqn_algorithm, "target_net"):
-                    agent.dqn_algorithm.target_net.to(DEVICE)
+                mtime = os.path.getmtime(latest_model_file)
+                if mtime > last_loaded_mtime:
+                    # 发现新模型，执行加载
+                    sys.stderr.write(f"[Worker] Loading updated latest.pth...\n")
+                    agent.load_model(latest_model_file)
+                    
+                    # 仅在模型更新时通过扫描文件夹获取一次当前 step 数，用于存数据时的命名
+                    _, step_num = get_latest_model_path()
+                    current_model_step = step_num
+                    
+                    # 确保权重移动到正确设备
+                    if hasattr(agent.dqn_algorithm, "policy_net"):
+                        agent.dqn_algorithm.policy_net.to(DEVICE)
+                    
+                    last_loaded_mtime = mtime
+                    sys.stderr.write(f"[Worker] Model updated to step {current_model_step}\n")
+                else:
+                    # 模型未变，跳过加载逻辑
+                    pass
             except Exception as e:
-                sys.stderr.write(f"Failed to load model: {e}\n")
-        # 更新 奖励
+                sys.stderr.write(f"[Error] Failed to load latest model: {e}\n")
+
+        # 2. 按需加载配置（如果有动态配置文件）
         agent.reward_calculator.reload_config()
         
-        # Update memory saver context
+        # 3. 更新上下文并重置 Agent 状态
         memory_saver.set_context(chosen_class, current_model_step)
-
-        # 2. Play one game
         agent.change_class(chosen_class)
         
-        # Play game
-        coordinator.play_one_game(chosen_class, ascension_level=1)
+        # 4. 随机微小延迟，错开多个 Worker 的启动峰值
+        time.sleep(random.uniform(0.1, 1.0))
+
+        # 5. 执行一局游戏
+        try:
+            coordinator.play_one_game(chosen_class, ascension_level=1)
+        except Exception as e:
+            sys.stderr.write(f"[Runtime Error] Game session crashed: {e}\n")
+            time.sleep(2) # 发生异常等两秒再重开
 
 if __name__ == "__main__":
     run_worker()
-    # model_path, step = get_latest_model_path()
-    # print(f"Latest model: {model_path} at step {step}")
