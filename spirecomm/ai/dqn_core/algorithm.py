@@ -129,7 +129,7 @@ class SpireAgent:
                     self.target_net.load_state_dict(checkpoint['model'], strict=False)
                     sys.stderr.write(f"[INFO] Success to load: {path}\n")
                 except RuntimeError as e:
-                    sys.stderr.write(f"[ERROR] 模型权重加载失败 (维度不匹配?): {e}\n")
+                    sys.stderr.write(f"[ERROR] Model weight loading failed (dimension mismatch?): {e}\n")
                     raise e
 
             # 2. 加载优化器（保持注释掉，因为维度变了，旧优化器不能用）
@@ -137,7 +137,7 @@ class SpireAgent:
                 try:
                     self.optimizer.load_state_dict(checkpoint['optimizer'])
                 except Exception as e:
-                    sys.stderr.write(f"[WARN] 优化器加载失败 (将被重置): {e}\n")
+                    sys.stderr.write(f"[WARN] Optimizer loading failed (will be reset): {e}\n")
 
             # 3. 恢复 training_steps
             ts = 0
@@ -172,18 +172,18 @@ class SpireAgent:
             if 'exploration_total_steps' in checkpoint:
                 new_target = int(checkpoint['exploration_total_steps'])
                 if new_target != self.exploration_total_steps:
-                    sys.stderr.write(f"[INFO] 检测到配置变更: Total Steps {self.exploration_total_steps} -> {new_target}\n")
+                    sys.stderr.write(f"[INFO] Detected config change: Total Steps {self.exploration_total_steps} -> {new_target}\n")
                     self.exploration_total_steps = new_target
 
             # 4. 同步温度
             try:
                 self.update_temperature()
-                sys.stderr.write(f"[INFO] 进度恢复: training_steps={self.training_steps}, Temp={self.temperature:.4f}\n")
+                sys.stderr.write(f"[INFO] Progress restored: training_steps={self.training_steps}, Temp={self.temperature:.4f}\n")
             except Exception as e:
-                sys.stderr.write(f"[WARN] 温度更新失败: {e}\n")
+                sys.stderr.write(f"[WARN] Temperature update failed: {e}\n")
 
         except Exception as e:
-            sys.stderr.write(f"[FATAL] load_model 发生严重错误: {e}\n")
+            sys.stderr.write(f"[FATAL] load_model: {e}\n")
             raise e
 
     # ==========================================
