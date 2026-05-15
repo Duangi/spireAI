@@ -72,9 +72,10 @@ def get_latest_model_agent(player_class: PlayerClass = None, wandb_logger: Wandb
         # 先创建 agent，避免在构造函数内直接加载导致异常终止
         agent = DQNAgent(wandb_logger=wandb_logger)
         agent.load_model(latest_model_path)
-        # 同步或初始化 steps_done 为加载的 step
-        agent.steps_done = latest_step
-        return latest_step, agent
+        # 重置步数计数器：保留权重，但从 0 开始新训练周期
+        agent.dqn_algorithm.training_steps = 0
+        agent.steps_done = 0
+        return 0, agent
     else:
         agent = DQNAgent(wandb_logger=wandb_logger)
         agent.steps_done = 0

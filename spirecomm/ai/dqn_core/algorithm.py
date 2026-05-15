@@ -65,7 +65,7 @@ class SpireAgent:
 
         self.temperature_start = 2.0
         self.temperature = self.temperature_start
-        self.exploration_total_steps = 5000000  # 计划的总探索步数
+        self.exploration_total_steps = 600000  # 计划的总探索步数
         self.is_training = True
         self.absolute_logger = AbsoluteLogger(LogType.STATE)
         self.absolute_logger.start_episode()
@@ -272,10 +272,60 @@ class SpireAgent:
             pred_q_values.append(q_val)
         pred_q_tensor = torch.stack(pred_q_values)
 
-        # 3. 计算 Target Q
+        # 3. 计算 Target Q（与 Predicted Q 使用相同的多头求和结构）
+        #    用 2D 矩阵枚举 (card, target) 组合取 max，而非独立 max 相加
         with torch.no_grad():
             next_output: SpireOutput = self.target_net(batch_next_state)
-            max_next_q, _ = next_output.q_action_type.max(dim=1)
+
+            # 显式掩码：从 next_state 的 ID 字段推导 padding 位
+            action_type_valid = batch_next_state.action_mask.bool()   # [B, 10]
+            card_valid = batch_next_state.hand_ids != 0               # [B, 10]
+            monster_valid = batch_next_state.monster_ids != 0         # [B, 5]
+            choice_valid = batch_next_state.choice_ids != 0           # [B, 15]
+            pot_use_valid = batch_next_state.potion_ids != 0          # [B, 5]
+            pot_disc_valid = batch_next_state.potion_ids != 0         # [B, 5]
+
+            # 对所有子头显式掩码，用 -100 代替 -1e9 防止数值爆炸
+            MASK_VAL = -100.0
+            m_type_q = next_output.q_action_type.masked_fill(~action_type_valid, MASK_VAL)
+            m_card = next_output.q_play_card.masked_fill(~card_valid, MASK_VAL)          # [B, 10]
+            m_target = next_output.q_target_monster.masked_fill(~monster_valid, MASK_VAL) # [B, 5]
+            m_choose = next_output.q_choose_option.masked_fill(~choice_valid, MASK_VAL)   # [B, 15]
+            m_pot_use = next_output.q_potion_use.masked_fill(~pot_use_valid, MASK_VAL)    # [B, 5]
+            m_pot_disc = next_output.q_potion_discard.masked_fill(~pot_disc_valid, MASK_VAL)
+
+            # --- PLAY: 枚举 (card, target) 矩阵取 max ---
+            # card_q [B,10,1] + target_q [B,1,5] → combined [B,10,5]
+            combined_play = m_card.unsqueeze(2) + m_target.unsqueeze(1)
+            combined_play = combined_play.clamp(min=MASK_VAL, max=100.0)
+            combined_play = combined_play.masked_fill(~monster_valid.unsqueeze(1), MASK_VAL)
+            best_play = combined_play.reshape(combined_play.size(0), -1).max(dim=1).values  # [B]
+
+            # --- POTION_USE: 同理枚举 (potion, target) 矩阵 ---
+            combined_pot = m_pot_use.unsqueeze(2) + m_target.unsqueeze(1)
+            combined_pot = combined_pot.clamp(min=MASK_VAL, max=100.0)
+            combined_pot = combined_pot.masked_fill(~monster_valid.unsqueeze(1), MASK_VAL)
+            best_pot_use = combined_pot.reshape(combined_pot.size(0), -1).max(dim=1).values  # [B]
+
+            # --- CHOOSE / POTION_DISCARD: 单头，直接 max ---
+            best_choose = m_choose.max(dim=1).values      # [B]
+            best_pot_disc = m_pot_disc.max(dim=1).values   # [B]
+
+            # 组合：每种 action type = type_q + 该类型相关子头的最优 Q
+            combined_type_q = torch.stack([
+                m_type_q[:, 0] + best_play,                  # PLAY
+                m_type_q[:, 1] + best_choose,                # CHOOSE
+                m_type_q[:, 2] + best_pot_use,               # POTION_USE
+                m_type_q[:, 3] + best_pot_disc,              # POTION_DISCARD
+                m_type_q[:, 4],                               # END
+                m_type_q[:, 5],                               # PROCEED
+                m_type_q[:, 6],                               # CONFIRM
+                m_type_q[:, 7],                               # RETURN
+                m_type_q[:, 8],                               # SKIP
+                m_type_q[:, 9],                               # LEAVE
+            ], dim=1)  # [B, 10]
+            combined_type_q = combined_type_q.clamp(min=MASK_VAL, max=100.0)
+            max_next_q, _ = combined_type_q.max(dim=1)       # [B]
             target_q_tensor = batch_rewards + (1 - batch_dones) * self.gamma * max_next_q
 
         # 4. 反向传播
@@ -286,9 +336,10 @@ class SpireAgent:
             loss = torch.tensor(0.0, device=self.device, requires_grad=True)
 
         self.optimizer.zero_grad()
+        grad_norm = 0.0
         if finite_mask.any():
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0).item()
             self.optimizer.step()
 
         # 用 training_steps 作为唯一权威步数
@@ -303,19 +354,48 @@ class SpireAgent:
         # 5. 日志记录
         if self.wandb_logger:
             with torch.no_grad():
-                valid_q = pred_q_tensor[finite_mask]
-                avg_q = valid_q.mean().item() if len(valid_q) > 0 else 0.0
-                max_q = valid_q.max().item() if len(valid_q) > 0 else 0.0
-                min_q = valid_q.min().item() if len(valid_q) > 0 else 0.0
                 loss_val = loss.item() if torch.isfinite(loss) else 0.0
 
+                # Predicted Q 统计（使用 masked 版本，-1e9 位不参与）
+                valid_pred = pred_q_tensor[finite_mask]
+                pred_mean = valid_pred.mean().item() if len(valid_pred) > 0 else 0.0
+                pred_std  = valid_pred.std().item()  if len(valid_pred) > 1  else 0.0
+                pred_max  = valid_pred.max().item()  if len(valid_pred) > 0 else 0.0
+                pred_min  = valid_pred.min().item()  if len(valid_pred) > 0 else 0.0
+
+                # Target Q 统计
+                tgt_mean = target_q_tensor[finite_mask].mean().item() if finite_mask.any() else 0.0
+                tgt_std  = target_q_tensor[finite_mask].std().item()  if finite_mask.sum() > 1 else 0.0
+
+                # TD Error = |predicted - target|，收敛的核心指标
+                td_error = (pred_q_tensor - target_q_tensor).abs()
+                td_mean  = td_error[finite_mask].mean().item() if finite_mask.any() else 0.0
+                td_std   = td_error[finite_mask].std().item()  if finite_mask.sum() > 1 else 0.0
+
+                # 合法动作类型比例
+                action_type_valid = batch_state.action_mask.bool()
+                valid_ratio = action_type_valid.float().mean().item()
+
             metrics = {
-                "loss": loss_val,
-                "avg_reward": batch_rewards.mean().item(),
-                "avg_q_value": avg_q,
-                "max_q_value": max_q,
-                "min_q_value": min_q,
-                "temperature": self.temperature,
+                # 核心指标（每步都记录）
+                "train/loss":            loss_val,
+                "train/predict_q_mean":  pred_mean,
+                "train/predict_q_std":   pred_std,
+                "train/target_q_mean":   tgt_mean,
+                "train/target_q_std":    tgt_std,
+                "train/td_error_mean":   td_mean,
+                "train/td_error_std":    td_std,
+                "train/grad_norm":       grad_norm,
+                "train/temperature":     self.temperature,
+                "train/valid_action_ratio": valid_ratio,
+                "train/avg_reward":      batch_rewards.mean().item(),
+                # 保留旧名称兼容 WandB 历史对比
+                "loss":                  loss_val,
+                "avg_q_value":           pred_mean,
+                "max_q_value":           pred_max,
+                "min_q_value":           pred_min,
+                "avg_reward":            batch_rewards.mean().item(),
+                "temperature":           self.temperature,
             }
 
             # 重型分布数据：每 1000 步输出一次

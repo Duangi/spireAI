@@ -453,6 +453,9 @@ class RewardCalculator:
         log_lines.append(f"总奖励: {total_reward}\n\n")
         self.absolute_logger.write("\n".join(log_lines))
 
+        # 截断极端奖励，防止 Target Q 膨胀
+        total_reward = max(-10.0, min(10.0, total_reward))
+
         # Return both total reward and details string
         details_str = ", ".join(details_list)
         return total_reward, details_str

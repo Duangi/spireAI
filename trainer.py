@@ -177,7 +177,9 @@ def run_trainer():
     if latest_model_path:
         print(f"Loading latest model from {latest_model_path} (Step: {initial_step})...")
         agent.load_model(latest_model_path)
-        current_step = initial_step
+        # 重置步数计数器：保留权重，但从 0 开始新训练周期
+        agent.dqn_algorithm.training_steps = 0
+        current_step = 0
     else:
         print("No existing model found. Starting from scratch.")
 
