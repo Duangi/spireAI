@@ -29,6 +29,10 @@ class DQNAgent:
         self.state_processor = GameStateProcessor()
         self.reward_calculator = RewardCalculator(state_processor=self.state_processor)
 
+        # Episode-level 追踪
+        self._episode_return = 0.0
+        self._episode_steps = 0
+
         # 初始化配置
         config = SpireConfig()
         # 初始化 SpireAgent
@@ -141,11 +145,13 @@ class DQNAgent:
         """
         # --- 学习与记忆 ---
         reward = 0
+        self._episode_steps += 1
         # 只有在非游玩模式下，或者设置了 memory_callback 时，才进行记忆
         if not self.play_mode or self.memory_callback:
             if self.previous_game_state is not None and self.previous_action is not None:
                 # a. 计算奖励
                 reward, reward_details = self.reward_calculator.calculate(self.previous_game_state, game_state, self.previous_action, self.previous_prev_state)
+                self._episode_return += reward
                 
                 # b. 处理新状态
                 next_state_tensor = self.state_processor.get_state_tensor(game_state)
@@ -254,6 +260,18 @@ class DQNAgent:
         self.previous_state_tensor = None
 
         return StartGameAction(self.chosen_class)
+
+    def get_episode_stats(self):
+        """返回本局的累计指标，供外部（train.py）记录 episode-level WandB 数据"""
+        return {
+            "return": self._episode_return,
+            "steps": self._episode_steps,
+        }
+
+    def reset_episode_stats(self):
+        """每局结束后重置累计器"""
+        self._episode_return = 0.0
+        self._episode_steps = 0
 
     def handle_error(self, error):
         pass

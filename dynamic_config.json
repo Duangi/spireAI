@@ -1,5 +1,5 @@
 {
-    "exploration_total_steps": 600000,
+    "exploration_total_steps": 300000,
     "reward": {
         "WASTE_ENERGY_PENALTY" : -15.0
     }

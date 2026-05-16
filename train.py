@@ -38,6 +38,37 @@ MIN_MEMORY_TO_TRAIN = 200 # 经验池中至少有这么多记忆才开始训练
 TRAIN_BATCHES_PER_EPISODE = 64 # 每局游戏结束后，从经验池中采样训练的次数
 BATCH_SIZE = 32 # 每次训练时从经验池采样的大小
 
+# --- Episode-level 指标追踪 ---
+from collections import deque as _deque
+_episode_wins = _deque(maxlen=10)  # 滚动窗口：最近 10 局胜负 (True/False)
+
+def _log_episode_metrics(agent: DQNAgent, coordinator, victory: bool):
+    """每局结束后记录 episode-level WandB 指标"""
+    stats = agent.get_episode_stats()
+    floor_reached = 0
+    if coordinator.last_game_state:
+        floor_reached = coordinator.last_game_state.floor
+
+    _episode_wins.append(victory)
+    win_rate = sum(_episode_wins) / len(_episode_wins)
+
+    logger = agent.dqn_algorithm.wandb_logger
+    if logger:
+        logger.log_metrics({
+            "episode/return":          stats["return"],
+            "episode/length":          stats["steps"],
+            "episode/floor_reached":   floor_reached,
+            "episode/win":             1.0 if victory else 0.0,
+            "episode/win_rate_10":     win_rate,
+        }, step=agent.dqn_algorithm.training_steps)
+
+    agent.reset_episode_stats()
+    _write_to_log_file(
+        f"Episode结束: floor={floor_reached} victory={victory} "
+        f"return={stats['return']:.1f} steps={stats['steps']} "
+        f"win_rate_10={win_rate:.0%}\n"
+    )
+
 # 从最新的模型开始训练
 def get_latest_model_agent(player_class: PlayerClass = None, wandb_logger: WandbLogger = None) -> Tuple[int,DQNAgent]:
     models_dir = os.path.join(get_root_dir(), "models")
@@ -162,7 +193,8 @@ def train_single_class(agent:DQNAgent, max_steps:int = MAX_STEPS, player_class:P
             break
         log_line = (f"开始训练 {chosen_class}进阶 {ascension_level}\n")
         _write_to_log_file(log_line)
-        coordinator.play_one_game(chosen_class, ascension_level=ascension_level)
+        victory = coordinator.play_one_game(chosen_class, ascension_level=ascension_level)
+        _log_episode_metrics(agent, coordinator, victory)
 
         # 学习阶段：每局结束后多次从经验池采样训练
         if len(agent.dqn_algorithm.memory) > MIN_MEMORY_TO_TRAIN:
@@ -218,7 +250,8 @@ def train_all_classes(agent: DQNAgent = None, max_steps: int = MAX_STEPS, ascens
         agent.change_class(chosen_class)
         log_line = (f"开始训练 {chosen_class}进阶 {ascension_level}")
         _write_to_log_file(log_line)
-        coordinator.play_one_game(chosen_class, ascension_level=ascension_level)
+        victory = coordinator.play_one_game(chosen_class, ascension_level=ascension_level)
+        _log_episode_metrics(agent, coordinator, victory)
 
         if len(agent.dqn_algorithm.memory) > MIN_MEMORY_TO_TRAIN:
             # 预热阶段
