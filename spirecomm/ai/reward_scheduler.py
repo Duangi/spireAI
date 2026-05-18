@@ -9,6 +9,12 @@ from spirecomm.utils.path import get_root_dir
 WINDOW_SIZE = 40
 MIN_EPISODES_BEFORE_PROMOTION = 12
 VICTORY_RATE_FOR_FINAL_STAGE = 0.10
+AVG_FLOOR_THRESHOLD_STAGE_1 = 12.0
+AVG_FLOOR_THRESHOLD_STAGE_2 = 22.0
+AVG_FLOOR_THRESHOLD_STAGE_3 = 40.0
+ACT2_REACH_RATE_THRESHOLD_STAGE_1 = 0.30
+ACT3_REACH_RATE_THRESHOLD_STAGE_2 = 0.20
+ACT4_REACH_RATE_THRESHOLD_STAGE_3 = 0.10
 ACT2_FLOOR_THRESHOLD = 18
 ACT3_FLOOR_THRESHOLD = 35
 ACT4_FLOOR_THRESHOLD = 52
@@ -238,10 +244,10 @@ class RewardAutoScheduler:
         if len(history) < MIN_EPISODES_BEFORE_PROMOTION:
             return 0
 
-        if metrics["victory_rate"] >= VICTORY_RATE_FOR_FINAL_STAGE or metrics["avg_floor"] >= 40.0 or metrics["act4_reach_rate"] >= 0.10:
+        if metrics["victory_rate"] >= VICTORY_RATE_FOR_FINAL_STAGE or metrics["avg_floor"] >= AVG_FLOOR_THRESHOLD_STAGE_3 or metrics["act4_reach_rate"] >= ACT4_REACH_RATE_THRESHOLD_STAGE_3:
             return 3
-        if metrics["avg_floor"] >= 22.0 or metrics["act3_reach_rate"] >= 0.20:
+        if metrics["avg_floor"] >= AVG_FLOOR_THRESHOLD_STAGE_2 or metrics["act3_reach_rate"] >= ACT3_REACH_RATE_THRESHOLD_STAGE_2:
             return 2
-        if metrics["avg_floor"] >= 12.0 or metrics["act2_reach_rate"] >= 0.30:
+        if metrics["avg_floor"] >= AVG_FLOOR_THRESHOLD_STAGE_1 or metrics["act2_reach_rate"] >= ACT2_REACH_RATE_THRESHOLD_STAGE_1:
             return 1
         return 0
