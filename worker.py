@@ -8,6 +8,7 @@ from datetime import datetime
 from spirecomm.communication.coordinator import Coordinator
 from spirecomm.spire.character import PlayerClass
 from spirecomm.ai.dqn import DQNAgent
+from spirecomm.ai.reward_scheduler import RewardAutoScheduler
 from spirecomm.utils.path import get_root_dir
 
 # --- Configuration ---
@@ -90,6 +91,12 @@ def get_latest_model_path():
 def run_worker():
     memory_saver = MemorySaver()
     agent = DQNAgent(play_mode=False, memory_callback=memory_saver.save_transition)
+    reward_scheduler = RewardAutoScheduler()
+    scheduler_state = reward_scheduler.initialize()
+    sys.stderr.write(
+        "[Worker] Reward auto scheduler initialized: "
+        f"stage={scheduler_state.next_stage} avg_floor={scheduler_state.metrics['avg_floor']:.2f}\n"
+    )
 
     # 移动模型到正确设备（初始）
     try:
@@ -154,6 +161,32 @@ def run_worker():
         # 5. 执行一局游戏
         try:
             coordinator.play_one_game(chosen_class, ascension_level=1)
+            final_floor = 0
+            victory = False
+            if coordinator.last_game_state is not None:
+                final_floor = int(getattr(coordinator.last_game_state, "floor", 0) or 0)
+                screen = getattr(coordinator.last_game_state, "screen", None)
+                victory = bool(getattr(screen, "victory", False))
+            scheduler_update = reward_scheduler.record_episode(
+                floor_reached=final_floor,
+                victory=victory,
+                player_class=getattr(chosen_class, "name", str(chosen_class)),
+            )
+            if scheduler_update.changed:
+                sys.stderr.write(
+                    "[Worker] Reward auto scheduler promoted "
+                    f"stage {scheduler_update.current_stage} -> {scheduler_update.next_stage} "
+                    f"(avg_floor={scheduler_update.metrics['avg_floor']:.2f}, "
+                    f"act2_rate={scheduler_update.metrics['act2_reach_rate']:.2%}, "
+                    f"act3_rate={scheduler_update.metrics['act3_reach_rate']:.2%}, "
+                    f"victory_rate={scheduler_update.metrics['victory_rate']:.2%})\n"
+                )
+            else:
+                sys.stderr.write(
+                    "[Worker] Reward auto scheduler kept "
+                    f"stage={scheduler_update.next_stage} "
+                    f"(floor={final_floor}, avg_floor={scheduler_update.metrics['avg_floor']:.2f})\n"
+                )
         except Exception as e:
             sys.stderr.write(f"[Runtime Error] Game session crashed: {e}\n")
             time.sleep(2) # 发生异常等两秒再重开
