@@ -1,7 +1,7 @@
 import json
 import os
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from spirecomm.utils.path import get_root_dir
 
@@ -152,7 +152,7 @@ class RewardAutoScheduler:
             reward_config=reward_config,
         )
 
-    def _load_state(self) -> Dict[str, object]:
+    def _load_state(self) -> Dict[str, Any]:
         if not os.path.exists(self.state_path):
             return {"current_stage": 0, "history": []}
         try:
@@ -172,7 +172,7 @@ class RewardAutoScheduler:
             json.dump(self.state, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, self.state_path)
 
-    def _load_dynamic_config(self) -> Dict[str, object]:
+    def _load_dynamic_config(self) -> Dict[str, Any]:
         if not os.path.exists(self.dynamic_config_path):
             return {}
         try:

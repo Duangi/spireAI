@@ -111,7 +111,7 @@ def run_worker():
     coordinator.register_state_change_callback(agent.get_next_action_in_game)
     coordinator.register_out_of_game_callback(agent.get_next_action_out_of_game)
 
-    player_class_cycle = itertools.cycle(PlayerClass)
+    player_class_cycle = itertools.cycle(list(PlayerClass))
     
     # 状态跟踪变量
     last_loaded_mtime = 0
@@ -170,7 +170,7 @@ def run_worker():
             scheduler_update = reward_scheduler.record_episode(
                 floor_reached=final_floor,
                 victory=victory,
-                player_class=getattr(chosen_class, "name", str(chosen_class)),
+                player_class=chosen_class.name,
             )
             if scheduler_update.changed:
                 sys.stderr.write(
