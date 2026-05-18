@@ -8,6 +8,9 @@ from spirecomm.utils.path import get_root_dir
 
 WINDOW_SIZE = 40
 MIN_EPISODES_BEFORE_PROMOTION = 12
+ACT2_FLOOR_THRESHOLD = 18
+ACT3_FLOOR_THRESHOLD = 35
+ACT4_FLOOR_THRESHOLD = 52
 
 
 STAGE_REWARD_CONFIGS: Dict[int, Dict[str, float]] = {
@@ -225,9 +228,9 @@ class RewardAutoScheduler:
             "avg_floor": sum(floors) / count,
             "best_floor": float(max(floors)),
             "victory_rate": sum(victories) / count,
-            "act2_reach_rate": sum(1.0 for floor in floors if floor >= 18) / count,
-            "act3_reach_rate": sum(1.0 for floor in floors if floor >= 35) / count,
-            "act4_reach_rate": sum(1.0 for floor in floors if floor >= 52) / count,
+            "act2_reach_rate": sum(1.0 for floor in floors if floor >= ACT2_FLOOR_THRESHOLD) / count,
+            "act3_reach_rate": sum(1.0 for floor in floors if floor >= ACT3_FLOOR_THRESHOLD) / count,
+            "act4_reach_rate": sum(1.0 for floor in floors if floor >= ACT4_FLOOR_THRESHOLD) / count,
         }
 
     def _determine_target_stage(self, history: List[Dict[str, object]], metrics: Dict[str, float]) -> int:
