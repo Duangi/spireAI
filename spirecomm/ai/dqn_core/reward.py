@@ -1,6 +1,7 @@
 import os
 import json
 import sys
+import math
 from typing import List
 from spirecomm.ai.dqn_core.action import BaseAction
 from spirecomm.spire.game import Game
@@ -453,8 +454,13 @@ class RewardCalculator:
         log_lines.append(f"总奖励: {total_reward}\n\n")
         self.absolute_logger.write("\n".join(log_lines))
 
-        # 截断极端奖励，防止 Target Q 膨胀
-        total_reward = max(-10.0, min(10.0, total_reward))
+        # Signed log 压缩：保留奖励排序，压缩极端值
+        # sign(r) * log(1 + |r|) * scale
+        REWARD_LOG_SCALE = 2.0
+        if total_reward >= 0:
+            total_reward = math.log1p(total_reward) * REWARD_LOG_SCALE
+        else:
+            total_reward = -math.log1p(-total_reward) * REWARD_LOG_SCALE
 
         # Return both total reward and details string
         details_str = ", ".join(details_list)
