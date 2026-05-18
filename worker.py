@@ -1,7 +1,6 @@
 import os
 import sys
 import torch
-import itertools
 import time
 import random
 from datetime import datetime
@@ -111,7 +110,8 @@ def run_worker():
     coordinator.register_state_change_callback(agent.get_next_action_in_game)
     coordinator.register_out_of_game_callback(agent.get_next_action_out_of_game)
 
-    player_class_cycle = itertools.cycle(sorted(PlayerClass, key=lambda candidate: candidate.value))
+    # 只训练单个角色（IRONCLAD），专注精通
+    chosen_class = PlayerClass.IRONCLAD
     
     # 状态跟踪变量
     last_loaded_mtime = 0
@@ -121,8 +121,6 @@ def run_worker():
     sys.stderr.write(f"Worker initialized on {DEVICE}. Entering main loop...\n")
 
     while True:
-        chosen_class = next(player_class_cycle)
-        
         # 1. 按需加载模型
         if os.path.exists(latest_model_file):
             try:

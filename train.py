@@ -103,8 +103,7 @@ def get_latest_model_agent(player_class: PlayerClass = None, wandb_logger: Wandb
         # 先创建 agent，避免在构造函数内直接加载导致异常终止
         agent = DQNAgent(wandb_logger=wandb_logger)
         agent.load_model(latest_model_path)
-        # 重置步数计数器：保留权重，但从 0 开始新训练周期
-        agent.dqn_algorithm.training_steps = 0
+        # training_steps 保持 checkpoint 中的值，温度从对应进度继续
         agent.steps_done = 0
         return 0, agent
     else:
@@ -282,9 +281,9 @@ if __name__ == "__main__":
     # print(get_latest_model_agent())
     wandb_logger = WandbLogger(project_name="spire-ai-train", run_name=f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
 
-    # 在这里修改需要训练的角色与参数
-    player_class_to_train = PlayerClass.THE_SILENT
-    train_single_class_mode = False
+    # 在这里修改需要训练的角色与参数（专注 IRONCLAD）
+    player_class_to_train = PlayerClass.IRONCLAD
+    train_single_class_mode = True
     ascension_level_to_train = 20
     
     # 获取最新模型 (注意：这里返回的是 latest_step)

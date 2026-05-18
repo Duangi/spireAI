@@ -89,12 +89,12 @@ class SpireState:
     player_orb_ids: torch.Tensor           # [Batch, 10]
     player_orb_vals: torch.Tensor          # [Batch, 10, 2]
 
-    # --- E. 怪物状态 ---
-    monster_ids: torch.Tensor              # [Batch, 5]
-    monster_intent_ids: torch.Tensor       # [Batch, 5]
-    monster_numeric: torch.Tensor          # [Batch, 5, numeric_monster_dim]
-    monster_power_ids: torch.Tensor        # [Batch, 5, 20]
-    monster_power_feats: torch.Tensor      # [Batch, 5, 20, 3]
+    # --- E. 怪物状态 (MAX_MONSTER_COUNT=15) ---
+    monster_ids: torch.Tensor              # [Batch, 15]
+    monster_intent_ids: torch.Tensor       # [Batch, 15]
+    monster_numeric: torch.Tensor          # [Batch, 15, numeric_monster_dim]
+    monster_power_ids: torch.Tensor        # [Batch, 15, 20]
+    monster_power_feats: torch.Tensor      # [Batch, 15, 20, 3]
 
     # --- F. 屏幕与地图 ---
     screen_type_val: torch.Tensor          # [Batch, 1]
@@ -149,7 +149,7 @@ class SpireOutput:
     q_action_type: torch.Tensor    # [Batch, num_action_types]
     
     q_play_card: torch.Tensor      # [Batch, 10]
-    q_target_monster: torch.Tensor # [Batch, 5]
+    q_target_monster: torch.Tensor # [Batch, 15]
     q_choose_option: torch.Tensor  # [Batch, 15]
     q_potion_use: torch.Tensor     # [Batch, 5]
     q_potion_discard: torch.Tensor # [Batch, 5]
@@ -518,7 +518,7 @@ class SpireDQN(nn.Module):
         # 安全余量
         safety_margin = state.player_numeric[:, 3:4] - m_dmgs
         # 怪物存活数量
-        alive_count= (m_hps > 0).float().sum(dim=1, keepdim=True) / 5.0 # [B, 1]
+        alive_count= (m_hps > 0).float().sum(dim=1, keepdim=True) / float(MAX_MONSTER_COUNT) # [B, 1]
         math_hub = torch.cat([
             m_total_hp,
             m_dmgs,

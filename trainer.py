@@ -177,9 +177,8 @@ def run_trainer():
     if latest_model_path:
         print(f"Loading latest model from {latest_model_path} (Step: {initial_step})...")
         agent.load_model(latest_model_path)
-        # 重置步数计数器：保留权重，但从 0 开始新训练周期
-        agent.dqn_algorithm.training_steps = 0
-        current_step = 0
+        # training_steps 保持 checkpoint 中的值，温度从对应进度继续
+        current_step = agent.dqn_algorithm.training_steps
     else:
         print("No existing model found. Starting from scratch.")
 
@@ -239,13 +238,31 @@ def run_trainer():
                         # ========================================================
 
                         agent.dqn_algorithm.remember(
-                            t['state_tensor'], 
-                            t['action'], 
-                            t['reward'], 
-                            t['next_state_tensor'], 
-                            t['done'], 
+                            t['state_tensor'],
+                            t['action'],
+                            t['reward'],
+                            t['next_state_tensor'],
+                            t['done'],
                             t['reward_details']
                         )
+
+                    # --- Episode-level WandB 指标 ---
+                    ep_return = sum(t['reward'] for t in transitions)
+                    ep_length = len(transitions)
+                    ep_floor = 0
+                    # 从最后一步的 next_state 提取楼层 (global_numeric[3] * 60)
+                    try:
+                        last_next = transitions[-1]['next_state_tensor']
+                        if hasattr(last_next, 'global_numeric'):
+                            ep_floor = int(last_next.global_numeric[3].item() * 60)
+                    except Exception:
+                        pass
+                    if wandb.run is not None:
+                        wandb.log({
+                            "episode/return":        ep_return,
+                            "episode/length":        ep_length,
+                            "episode/floor_reached": ep_floor,
+                        }, step=current_step)
                     
                     # Move to archive
                     # 保持目录结构移动到 archive

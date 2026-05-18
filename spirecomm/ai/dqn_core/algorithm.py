@@ -71,27 +71,30 @@ class SpireAgent:
         self.absolute_logger.start_episode()
     def reload_config_from_file(self):
         """尝试从外部文件热更新参数"""
-        
+
         config_path = os.path.join(get_root_dir(), "dynamic_config.json")
-        
+
         if not os.path.exists(config_path):
             return
 
         try:
             with open(config_path, 'r') as f:
                 data = json.load(f)
-                
+
             # 读取并更新 exploration_total_steps
             new_total_steps = data.get("exploration_total_steps")
-            
+
             if new_total_steps and new_total_steps != self.exploration_total_steps:
-                print(f"\n[Hot Reload] 检测到配置变更: Total Steps {self.exploration_total_steps} -> {new_total_steps}")
+                old_total = self.exploration_total_steps
+                old_temp = self.temperature
                 self.exploration_total_steps = int(new_total_steps)
-                
-                # 立即强制刷新温度
+
+                # training_steps 不动，温度按新 total 自然重算
                 self.update_temperature()
-                print(f"[Hot Reload] 温度已更新为: {self.temperature:.4f}")
-                
+                print(f"\n[Hot Reload] Total Steps {old_total} -> {new_total_steps} "
+                      f"(steps={self.training_steps}) "
+                      f"Temp: {old_temp:.4f} -> {self.temperature:.4f}")
+
         except Exception as e:
             # 忽略读取错误（防止文件正在保存时读取报错）
             pass
@@ -257,18 +260,18 @@ class SpireAgent:
             act_idx = action.decomposed_type.value
             q_val = output.q_action_type[i, act_idx]
             if isinstance(action, PlayAction):
-                hand_idx = min(action.hand_idx, 9)
+                hand_idx = min(action.hand_idx, MAX_HAND_SIZE - 1)
                 q_val += output.q_play_card[i, hand_idx]
                 if action.target_idx is not None:
-                    q_val += output.q_target_monster[i, min(action.target_idx, 4)]
+                    q_val += output.q_target_monster[i, min(action.target_idx, MAX_MONSTER_COUNT - 1)]
             elif isinstance(action, ChooseAction):
                 q_val += output.q_choose_option[i, min(action.choice_idx, 14)]
             elif isinstance(action, PotionUseAction):
-                q_val += output.q_potion_use[i, min(action.potion_idx, 4)]
+                q_val += output.q_potion_use[i, min(action.potion_idx, MAX_POTION_COUNT - 1)]
                 if action.target_idx is not None:
-                    q_val += output.q_target_monster[i, min(action.target_idx, 4)]
+                    q_val += output.q_target_monster[i, min(action.target_idx, MAX_MONSTER_COUNT - 1)]
             elif isinstance(action, PotionDiscardAction):
-                q_val += output.q_potion_discard[i, min(action.potion_idx, 4)]
+                q_val += output.q_potion_discard[i, min(action.potion_idx, MAX_POTION_COUNT - 1)]
             pred_q_values.append(q_val)
         pred_q_tensor = torch.stack(pred_q_values)
 
@@ -280,7 +283,7 @@ class SpireAgent:
             # 显式掩码：从 next_state 的 ID 字段推导 padding 位
             action_type_valid = batch_next_state.action_mask.bool()   # [B, 10]
             card_valid = batch_next_state.hand_ids != 0               # [B, 10]
-            monster_valid = batch_next_state.monster_ids != 0         # [B, 5]
+            monster_valid = batch_next_state.monster_ids != 0         # [B, 15]
             choice_valid = batch_next_state.choice_ids != 0           # [B, 15]
             pot_use_valid = batch_next_state.potion_ids != 0          # [B, 5]
             pot_disc_valid = batch_next_state.potion_ids != 0         # [B, 5]
@@ -289,7 +292,7 @@ class SpireAgent:
             MASK_VAL = -100.0
             m_type_q = next_output.q_action_type.masked_fill(~action_type_valid, MASK_VAL)
             m_card = next_output.q_play_card.masked_fill(~card_valid, MASK_VAL)          # [B, 10]
-            m_target = next_output.q_target_monster.masked_fill(~monster_valid, MASK_VAL) # [B, 5]
+            m_target = next_output.q_target_monster.masked_fill(~monster_valid, MASK_VAL) # [B, 15]
             m_choose = next_output.q_choose_option.masked_fill(~choice_valid, MASK_VAL)   # [B, 15]
             m_pot_use = next_output.q_potion_use.masked_fill(~pot_use_valid, MASK_VAL)    # [B, 5]
             m_pot_disc = next_output.q_potion_discard.masked_fill(~pot_disc_valid, MASK_VAL)
@@ -540,7 +543,7 @@ class SpireAgent:
         # 提取 Batch 0 的结果
         q_type = output.q_action_type[0]      # [Num_Types]
         q_card = output.q_play_card[0]        # [10]
-        q_monster = output.q_target_monster[0]# [5]
+        q_monster = output.q_target_monster[0]# [MAX_MONSTER_COUNT]
         q_choice = output.q_choose_option[0]  # [15]
         q_pot_use = output.q_potion_use[0]    # [5]
         q_pot_disc = output.q_potion_discard[0] # [5]
