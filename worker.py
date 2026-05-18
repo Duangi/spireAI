@@ -111,7 +111,7 @@ def run_worker():
     coordinator.register_state_change_callback(agent.get_next_action_in_game)
     coordinator.register_out_of_game_callback(agent.get_next_action_out_of_game)
 
-    player_class_cycle = itertools.cycle(list(PlayerClass))
+    player_class_cycle = itertools.cycle(sorted(PlayerClass, key=lambda player_class: player_class.value))
     
     # 状态跟踪变量
     last_loaded_mtime = 0
@@ -164,7 +164,8 @@ def run_worker():
             final_floor = 0
             victory = False
             if coordinator.last_game_state is not None:
-                final_floor = int(getattr(coordinator.last_game_state, "floor", 0))
+                floor_value = getattr(coordinator.last_game_state, "floor", 0)
+                final_floor = int(floor_value) if floor_value is not None else 0
                 screen = getattr(coordinator.last_game_state, "screen", None)
                 victory = bool(getattr(screen, "victory", False))
             scheduler_update = reward_scheduler.record_episode(

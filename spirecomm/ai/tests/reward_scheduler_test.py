@@ -1,6 +1,6 @@
 import json
 
-from spirecomm.ai.reward_scheduler import RewardAutoScheduler
+from spirecomm.ai.reward_scheduler import MIN_EPISODES_BEFORE_PROMOTION, RewardAutoScheduler
 
 
 def test_reward_scheduler_promotes_stage_and_updates_dynamic_config(tmp_path):
@@ -16,7 +16,7 @@ def test_reward_scheduler_promotes_stage_and_updates_dynamic_config(tmp_path):
     assert init_result.next_stage == 0
     assert init_result.reward_config["WIN_BATTLE_REWARD"] == 10.0
 
-    for _ in range(12):
+    for _ in range(MIN_EPISODES_BEFORE_PROMOTION):
         result = scheduler.record_episode(floor_reached=18, victory=False, player_class="IRONCLAD")
 
     assert result.changed is True
@@ -35,7 +35,7 @@ def test_reward_scheduler_stage_never_regresses(tmp_path):
     scheduler = RewardAutoScheduler(root_dir=str(tmp_path))
     scheduler.initialize()
 
-    for _ in range(12):
+    for _ in range(MIN_EPISODES_BEFORE_PROMOTION):
         scheduler.record_episode(floor_reached=35, victory=False)
 
     assert scheduler.state["current_stage"] == 2
