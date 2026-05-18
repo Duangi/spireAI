@@ -161,12 +161,12 @@ def run_worker():
         # 5. 执行一局游戏
         try:
             coordinator.play_one_game(chosen_class, ascension_level=1)
-            final_floor = 0
-            victory = False
-            if coordinator.last_game_state is not None:
-                final_floor = int(getattr(coordinator.last_game_state, "floor", 0) or 0)
-                screen = getattr(coordinator.last_game_state, "screen", None)
-                victory = bool(getattr(screen, "victory", False))
+                final_floor = 0
+                victory = False
+                if coordinator.last_game_state is not None:
+                    final_floor = int(getattr(coordinator.last_game_state, "floor", 0))
+                    screen = getattr(coordinator.last_game_state, "screen", None)
+                    victory = bool(getattr(screen, "victory", False))
             scheduler_update = reward_scheduler.record_episode(
                 floor_reached=final_floor,
                 victory=victory,

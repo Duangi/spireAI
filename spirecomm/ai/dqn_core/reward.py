@@ -453,7 +453,9 @@ class RewardCalculator:
         log_lines.append(f"总奖励: {total_reward}\n\n")
         self.absolute_logger.write("\n".join(log_lines))
 
-        # 截断极端奖励，防止 Target Q 膨胀
+        # 截断极端奖励，防止 Target Q 膨胀。
+        # 当前自动调奖阶段配置就是围绕这个 [-10, 10] 的有效输出区间设计的：
+        # 早期保留更多 shaping，后期逐步削弱资源/普通战奖励，让楼层与 Boss 事件更接近主导信号。
         total_reward = max(-10.0, min(10.0, total_reward))
 
         # Return both total reward and details string

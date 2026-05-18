@@ -112,7 +112,7 @@ class RewardAutoScheduler:
         self.state = self._load_state()
 
     def initialize(self) -> RewardSchedulerUpdate:
-        stage = int(self.state.get("current_stage", 0) or 0)
+        stage = int(self.state.get("current_stage", 0))
         metrics = self._compute_metrics(self.state.get("history", []))
         reward_config = self._write_dynamic_config(stage, metrics)
         self._save_state()
@@ -128,7 +128,7 @@ class RewardAutoScheduler:
         history = list(self.state.get("history", []))
         history.append(
             {
-                "floor": int(floor_reached or 0),
+                "floor": int(floor_reached if floor_reached is not None else 0),
                 "victory": bool(victory),
                 "player_class": player_class or "",
             }
@@ -136,7 +136,7 @@ class RewardAutoScheduler:
         history = history[-WINDOW_SIZE:]
         self.state["history"] = history
 
-        current_stage = int(self.state.get("current_stage", 0) or 0)
+        current_stage = int(self.state.get("current_stage", 0))
         metrics = self._compute_metrics(history)
         target_stage = self._determine_target_stage(history, metrics)
         next_stage = max(current_stage, target_stage)
@@ -216,7 +216,7 @@ class RewardAutoScheduler:
                 "act4_reach_rate": 0.0,
             }
 
-        floors = [int(item.get("floor", 0) or 0) for item in history]
+        floors = [int(item.get("floor", 0)) for item in history]
         victories = [1.0 if item.get("victory") else 0.0 for item in history]
         count = float(len(history))
 
